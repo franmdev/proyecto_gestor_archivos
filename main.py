@@ -43,19 +43,21 @@ class AppOrchestrator:
 
     def safe_delete(self, path: Path):
         """
-        MEJORA: Intenta borrar un archivo con reintentos y espera.
-        Soluciona el [WinError 5] Access is denied.
+        MEJORA: Intenta borrar un archivo con reintentos y espera progresiva.
+        Soluciona el [WinError 5] Access is denied (archivo bloqueado por antivirus/sistema).
         """
         if not path.exists(): return
         
-        for i in range(3): # 3 intentos
+        max_retries = 10 # Aumentamos a 10 intentos para seguridad
+        for i in range(max_retries):
             try:
-                time.sleep(0.5) # Esperar a que el sistema libere el archivo
+                # Espera progresiva: 0.5s, 0.7s, 0.9s...
+                time.sleep(0.5 + (i * 0.2)) 
                 path.unlink()
                 return
             except PermissionError:
-                if i == 2: # En el último intento, solo avisar
-                    self.print_info(f"No se pudo borrar temporal inmediatamente: {path.name} (bloqueado)")
+                if i == max_retries - 1: # En el último intento, solo avisar
+                    self.print_info(f"⚠️ No se pudo borrar temporal inmediatamente: {path.name} (bloqueado). Se limpiará después.")
                 continue
             except Exception as e:
                 self.print_error(f"Error borrando {path.name}: {e}")
@@ -101,7 +103,7 @@ class AppOrchestrator:
     def show_menu(self):
         print(f"\n{Fore.BLUE}--- MENÚ PRINCIPAL ---{Style.RESET_ALL}")
         print("1. 📤 MODO SUBIDA (Detecta Duplicados)")
-        print("2. 📥 MODO DESCARGA (Explorador Prefijos)")
+        print("2. 📥 MODO DESCARGA (Explorador Visual)")
         print("3. 🔍 CONSULTAR ÍNDICE")
         print("4. 🔧 MANTENIMIENTO Y ESTADO")
         print("0. 🚪 SALIR")
@@ -207,7 +209,7 @@ class AppOrchestrator:
                     if self.cloud.upload_file(dest_7z, cloud_path):
                         self.print_success(f"Subido: {carpeta.name} -> {cloud_path}")
                         
-                        # F. LIMPIEZA AUTOMÁTICA MEJORADA (Usa safe_delete)
+                        # F. LIMPIEZA AUTOMÁTICA (Usa safe_delete mejorado)
                         self.safe_delete(dest_7z)
                         self.print_info("🧹 Archivo comprimido local eliminado.")
                             
@@ -236,48 +238,52 @@ class AppOrchestrator:
 
     def run_download_mode(self):
         """
-        MEJORA: Nuevo flujo jerárquico de descarga.
-        1. Sincronizar índice.
-        2. Mostrar Prefijos.
-        3. Mostrar Archivos.
-        4. Seleccionar IDs (ej: 3,4,5).
+        MEJORA: Nuevo flujo jerárquico con selección numérica y feedback detallado.
         """
         self.print_header("MODO DESCARGA EXPLORADOR")
         
-        # 1. Intentar sincronizar índice primero
+        # 1. Intentar sincronizar índice primero (Silencioso para no ensuciar)
         self.print_info("Sincronizando índice...")
         local_idx_enc = Path("data/temp/index_main_download.7z")
-        if self.cloud.download_file("index_main.7z", local_idx_enc):
+        if self.cloud.download_file("index_main.7z", local_idx_enc, silent=True):
             # Desencriptar índice con Clave CSV
             if self.inventory.load_from_encrypted(self.security, local_idx_enc):
                 self.print_success("Índice actualizado.")
-            self.safe_delete(local_idx_enc) # MEJORA: Borrado seguro
+            self.safe_delete(local_idx_enc) # Borrado seguro
         else:
             self.print_info("No se pudo descargar índice remoto. Usando local.")
 
-        # 2. Mostrar Prefijos Disponibles
+        # 2. Mostrar Prefijos Disponibles (Agrupados)
         summary = self.inventory.get_prefixes_summary()
         if summary.empty: return self.print_error("Índice vacío.")
 
         print(f"\n{Fore.CYAN}📂 PREFIJOS DISPONIBLES:{Style.RESET_ALL}")
-        # Ajuste visual de columnas para tabulate
-        summary.columns = ['Prefijo', 'Cant. Archivos']
-        print(tabulate(summary, headers='keys', tablefmt='simple', showindex=False))
+        # Agregamos un índice visual (#) para facilitar selección
+        summary = summary.reset_index(drop=True)
+        summary.index = summary.index + 1 # Empezar en 1
+        # Ajuste nombres columnas para visualización
+        summary_view = summary.rename(columns={'prefijo': 'Prefijo', 'count': 'Cant. Archivos'})
+        print(tabulate(summary_view, headers='keys', tablefmt='simple'))
 
-        # 3. Seleccionar Prefijo
-        sel_prefix = input("\n👉 Escriba el Prefijo a explorar (o 'SALIR'): ").upper().strip()
-        if sel_prefix == 'SALIR' or not sel_prefix: return
+        # 3. Seleccionar Prefijo por ID
+        sel_idx = input("\n👉 Seleccione el NÚMERO (#) del Prefijo (o 0 para Salir): ").strip()
+        if not sel_idx.isdigit() or int(sel_idx) == 0: return
+
+        try:
+            # Obtenemos el nombre del prefijo real basado en el número seleccionado
+            sel_prefix = summary.iloc[int(sel_idx)-1]['prefijo']
+        except IndexError:
+            return self.print_error("Número inválido.")
 
         # 4. Mostrar Archivos del Prefijo
         files_df = self.inventory.get_files_by_prefix(sel_prefix)
-        if files_df.empty: return self.print_error("Prefijo no existe o está vacío.")
+        if files_df.empty: return self.print_error("Carpeta vacía.")
 
         print(f"\n{Fore.CYAN}📄 ARCHIVOS EN '{sel_prefix}':{Style.RESET_ALL}")
-        # Mostramos ID, Nombre y Nombre 7z como pediste
         view_df = files_df[['id_global', 'nombre_original', 'nombre_encriptado', 'tamaño_mb']]
         print(tabulate(view_df, headers=['ID', 'Nombre Real', 'Nombre 7z', 'MB'], tablefmt='simple', showindex=False))
 
-        # 5. Selección de Archivos (Múltiple 3,4,5)
+        # 5. Selección de Archivos (Múltiple)
         selection = input("\n👉 Ingrese IDs a descargar (ej: 3,4,5) o 'TODO': ").strip()
         if not selection: return
 
@@ -285,39 +291,53 @@ class AppOrchestrator:
         if selection.upper() == 'TODO':
             to_download = files_df
         else:
-            # Parsear lista de IDs
             try:
                 ids = [int(x.strip()) for x in selection.split(',')]
-                # Filtrar DataFrame por los IDs seleccionados
                 to_download = files_df[files_df['id_global'].isin(ids)]
             except ValueError:
-                return self.print_error("Formato inválido. Use números separados por coma (ej: 1,3,5).")
+                return self.print_error("Formato inválido. Use números separados por coma.")
 
-        if to_download.empty: return self.print_error("Ningún archivo seleccionado o IDs no encontrados.")
+        if to_download.empty: return self.print_error("Ningún archivo seleccionado.")
 
-        # 6. Ejecutar Descarga
-        self.print_info(f"Iniciando descarga de {len(to_download)} archivos...")
+        # 6. Ejecutar Descarga (Iterativa con Feedback Mejorado)
+        total_items = len(to_download)
+        self.print_info(f"Iniciando descarga de {total_items} archivos...")
 
-        for _, row in to_download.iterrows():
+        for i, (idx, row) in enumerate(to_download.iterrows(), 1):
+            # Datos para feedback
+            nombre_real = row['nombre_original']
+            size_mb = row['tamaño_mb']
+            
+            # Rutas
             remote_path = f"{row['ruta_relativa']}{row['nombre_encriptado']}.7z"
             local_7z = Path(f"data/descargas/{row['nombre_encriptado']}.7z")
-            local_dest_folder = Path(f"data/desencriptados/{row['nombre_original']}")
+            local_dest_folder = Path(f"data/desencriptados/{nombre_real}")
 
-            self.print_info(f"⬇️ Bajando: {row['nombre_original']}...")
+            # Feedback Visual Mejorado
+            print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}📥 Bajando: {nombre_real} (Size: {size_mb} MB) - ({i} de {total_items}){Style.RESET_ALL}")
             
-            if self.cloud.download_file(remote_path, local_7z):
-                self.print_info("Desencriptando y descomprimiendo...")
-                
+            # A. Descarga (Mostrando barra de rclone)
+            start_dl = time.time()
+            # Pass silent=False para ver barra de rclone
+            if self.cloud.download_file(remote_path, local_7z, silent=False):
+                duration = time.time() - start_dl
+                print(f"{Fore.GREEN}   ✅ Descarga completada en {duration:.1f}s.{Style.RESET_ALL}")
+
+                # B. Descompresión
+                print(f"{Fore.YELLOW}📦 Desencriptando y descomprimiendo...{Style.RESET_ALL}")
                 # Desencriptar contenido con Password Maestra
                 if self.security.decrypt_extract_7z(local_7z, local_dest_folder):
-                    self.print_success(f"Archivo listo en: {local_dest_folder}")
+                    self.print_success(f"Archivo restaurado en: {local_dest_folder}")
                     
-                    # Limpieza automática del .7z descargado (Segura)
+                    # C. Limpieza Inmediata (Con safe_delete reforzado)
                     self.safe_delete(local_7z)
                 else:
                     self.print_error("Fallo en descompresión (contraseña incorrecta?).")
             else:
-                self.print_error("Fallo en descarga.")
+                self.print_error("Fallo en descarga desde la nube.")
+        
+        print(f"\n{Fore.GREEN}✨ Lote completado.{Style.RESET_ALL}")
 
     def run_query_mode(self):
         self.print_header("CONSULTA")
