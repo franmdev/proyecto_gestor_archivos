@@ -31,7 +31,8 @@ SEVEN_ZIP_PATH = os.getenv("SEVEN_ZIP_PATH", "7za.exe" if os.name == 'nt' else "
 # Prefijos permitidos para organizar carpetas
 VALID_PREFIXES = [
     'DOC', 'FIN', 'MED', 'IMG', 'BAK', 'COD', 
-    'VID', 'ARC', 'PWR', 'DAT', 'EML', 'MIX'
+    'VID', 'ARC', 'PWR', 'DAT', 'EML', 'MIX',
+    'GAM'
 ]
 
 # Estructura del CSV (Columnas)
