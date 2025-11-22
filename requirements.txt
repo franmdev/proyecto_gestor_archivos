@@ -1,0 +1,6 @@
+pandas
+cryptography
+python-dotenv
+colorama
+tabulate
+# py7zr <-- Lo quitamos porque usaremos el ejecutable 7z nativo via subprocess (más robusto)

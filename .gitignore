@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+
+# Variables de Entorno (¡CRÍTICO!)
+.env
+
+# Datos Locales (No subir archivos reales)
+data/logs/*
+data/temp/*
+data/descargas/*
+data/desencriptados/*
+data/backups/auto/*
+data/backups/manual/*
+
+# Ignorar CSVs planos (solo subiremos los encriptados si decidimos hacerlo)
+data/index/*.csv
+
+# Mantener la estructura de carpetas vacías (opcional, truco de git)
+!data/**/.gitkeep
