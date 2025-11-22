@@ -42,17 +42,27 @@ class AppOrchestrator:
     def start(self):
         """Arranque de la aplicación."""
         init_directories()
-        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.0 (Facade)")
+        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.1")
 
-        # 1. Autenticación
+        # 1. Autenticación DOBLE
         try:
-            master_pass = getpass.getpass(f"{Fore.YELLOW}🔐 Ingrese Contraseña MAESTRA (para archivos): {Style.RESET_ALL}")
-            if not master_pass: raise ValueError("La contraseña no puede estar vacía.")
+            print(f"{Fore.YELLOW}🔐 Paso 1: Autenticación{Style.RESET_ALL}")
+            
+            # A. Password Maestra (Archivos)
+            master_pass = getpass.getpass("   🔑 Ingrese Contraseña MAESTRA (para archivos): ")
+            if not master_pass: raise ValueError("La contraseña maestra no puede estar vacía.")
+            
+            # B. Password CSV (Índice)
+            csv_pass = getpass.getpass("   🔑 Ingrese Contraseña CSV (para índice): ")
+            if not csv_pass: raise ValueError("La contraseña CSV no puede estar vacía.")
+
+            if master_pass == csv_pass:
+                print(f"{Fore.RED}⚠️  ADVERTENCIA: Se recomienda usar contraseñas diferentes.{Style.RESET_ALL}")
             
             # Inicializamos los Managers
             self.security = SecurityManager(master_pass)
             self.cloud = CloudManager()
-            self.inventory = InventoryManager()
+            self.inventory = InventoryManager(csv_pass) # Pasamos la clave CSV aquí
             
             self.print_success("Sistemas inicializados correctamente.")
             
@@ -111,7 +121,6 @@ class AppOrchestrator:
             try:
                 prefijo = carpeta.name.split('_')[0] if '_' in carpeta.name else carpeta.name[:3].upper()
                 if prefijo not in self.inventory.df['prefijo'].unique():
-                     # Fallback simple si el nombre es solo "DOC"
                      pass
 
                 self.print_info(f"Procesando: {carpeta.name}...")
@@ -137,7 +146,7 @@ class AppOrchestrator:
                     "processed_date": time.strftime("%Y-%m-%d %H:%M:%S")
                 }
 
-                # C. Comprimir y Encriptar (Security Manager)
+                # C. Comprimir y Encriptar (Security Manager - Usa Password Maestra)
                 dest_7z = source_path / f"{hash_nombre}.7z"
                 success = self.security.compress_encrypt_7z(carpeta, dest_7z, metadata=metadata_json)
 
@@ -160,22 +169,27 @@ class AppOrchestrator:
                     self.inventory.add_record(record)
                     
                     # E. Subir a la Nube (Cloud Manager)
-                    # Subimos el .7z a la carpeta del prefijo correspondiente en la nube
                     cloud_path = f"{prefijo}/{hash_nombre}.7z"
                     if self.cloud.upload_file(dest_7z, cloud_path):
                         self.print_success(f"Subido: {carpeta.name} -> {cloud_path}")
+                        
+                        # F. LIMPIEZA AUTOMÁTICA (Borrar .7z local tras subida)
+                        try:
+                            dest_7z.unlink()
+                            self.print_info("🧹 Archivo comprimido local eliminado para ahorrar espacio.")
+                        except Exception as e:
+                            self.print_error(f"No se pudo borrar archivo temporal: {e}")
+                            
                         processed_count += 1
-                        # Opcional: Borrar el .7z local después de subir
-                        # dest_7z.unlink() 
                     else:
                         self.print_error(f"Fallo al subir {carpeta.name}")
                 
             except Exception as e:
                 self.print_error(f"Error procesando {carpeta.name}: {e}")
 
-        # 4. Finalización: Guardar y Subir Índice
+        # 4. Finalización: Guardar y Subir Índice (Usando Password CSV)
         if processed_count > 0:
-            self.print_info("Guardando índice encriptado...")
+            self.print_info("Guardando índice encriptado (Usando Clave CSV)...")
             encrypted_index_path = self.inventory.save_encrypted_backup(self.security, prefix="UPLOAD")
             
             if encrypted_index_path:
@@ -193,6 +207,7 @@ class AppOrchestrator:
         self.print_info("Intentando descargar índice más reciente...")
         local_idx_enc = Path("data/temp/index_main_download.7z")
         if self.cloud.download_file("index_main.7z", local_idx_enc):
+            # Desencriptar índice con Clave CSV (InventoryManager sabe cuál es)
             if self.inventory.load_from_encrypted(self.security, local_idx_enc):
                 self.print_success("Índice actualizado.")
             local_idx_enc.unlink(missing_ok=True)
@@ -218,7 +233,6 @@ class AppOrchestrator:
         if ids == 'todas':
             files_to_download = resultados
         else:
-            # Filtramos buscando coincidencia exacta con el ID ingresado
             files_to_download = resultados[resultados['id_global'].astype(str) == ids.strip()]
         
         if files_to_download.empty: 
@@ -234,11 +248,13 @@ class AppOrchestrator:
             
             if self.cloud.download_file(remote_path, local_7z):
                 self.print_info("Desencriptando y descomprimiendo...")
+                
+                # Desencriptar contenido con Password Maestra
                 if self.security.decrypt_extract_7z(local_7z, local_dest_folder):
                     self.print_success(f"Archivo listo en: {local_dest_folder}")
-                    # Validar MD5 post-descarga (Opcional pero recomendado)
-                    # current_md5 = self.security.calculate_md5(local_dest_folder)
-                    # if current_md5 == row['hash_md5']: print("Integridad OK")
+                    
+                    # Limpieza automática del .7z descargado
+                    local_7z.unlink()
                 else:
                     self.print_error("Fallo en descompresión (contraseña incorrecta?).")
             else:
