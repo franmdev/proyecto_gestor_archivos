@@ -130,9 +130,7 @@ class SecurityManager:
     def compress_encrypt_7z(self, source_path: Path, dest_path: Path, metadata: Dict = None, password: str = None) -> bool:
         """
         Comprime una carpeta/archivo a .7z usando AES-256 y Header Encryption (-mhe=on).
-        Opcionalmente inyecta un archivo 'metadatos.json' dentro del 7z para recuperación.
-        
-        MODIFICACIÓN: Acepta 'password' opcional para usar una clave distinta a la maestra (ej: CSV).
+        MEJORA: Usa -mx=0 (Store) para velocidad máxima (solo empaquetar y encriptar).
         """
         # Si no se pasa password, usa la maestra por defecto
         pwd_to_use = password if password else self.master_password
@@ -150,7 +148,7 @@ class SecurityManager:
                 self.seven_zip_exe, "a",       # Add (Comprimir)
                 f"-p{pwd_to_use}",             # Password (dinámico)
                 "-mhe=on",                     # Encrypt Headers (Oculta nombres de archivo)
-                "-mx=9",                       # Compresión Máxima
+                "-mx=0",                       # MEJORA: Store (Sin compresión, solo encriptación rápida)
                 "-y",                          # Yes to all
                 str(dest_path),                # Archivo destino
                 str(source_path)               # Fuente
@@ -174,7 +172,7 @@ class SecurityManager:
                 logger.error(f"❌ Error 7z: {result.stderr}")
                 return False
             
-            logger.info(f"✅ Compresión exitosa: {dest_path.name}")
+            logger.info(f"✅ Encriptación exitosa (Store): {dest_path.name}")
             return True
 
         except Exception as e:
@@ -188,7 +186,6 @@ class SecurityManager:
     def decrypt_extract_7z(self, archive_path: Path, dest_folder: Path, password: str = None) -> bool:
         """
         Desencripta y extrae un archivo .7z.
-        
         MODIFICACIÓN: Acepta 'password' opcional para usar una clave distinta a la maestra.
         """
         pwd_to_use = password if password else self.master_password
@@ -249,3 +246,36 @@ class SecurityManager:
         finally:
             if temp_extract_dir.exists():
                 shutil.rmtree(temp_extract_dir, ignore_errors=True)
+
+    # --- VALIDACIÓN DE CONTRASEÑA (TESTIGO) ---
+
+    def create_password_witness(self, path: Path, password: str) -> bool:
+        """Crea un archivo .7z mínimo para validar contraseñas."""
+        try:
+            dummy = path.parent / "witness.txt"
+            dummy.write_text("VALID")
+            
+            cmd = [
+                self.seven_zip_exe, "a",
+                f"-p{password}",
+                "-mhe=on", "-mx=0", "-y",
+                str(path), str(dummy)
+            ]
+            subprocess.run(cmd, capture_output=True)
+            dummy.unlink()
+            return True
+        except:
+            return False
+
+    def verify_password_with_witness(self, witness_path: Path, password: str) -> bool:
+        """Intenta abrir el testigo con la contraseña dada."""
+        try:
+            cmd = [
+                self.seven_zip_exe, "t", # Test
+                f"-p{password}",
+                str(witness_path)
+            ]
+            result = subprocess.run(cmd, capture_output=True)
+            return result.returncode == 0
+        except:
+            return False

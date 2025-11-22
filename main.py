@@ -9,7 +9,7 @@ from colorama import init, Fore, Style
 from tabulate import tabulate
 
 # Importamos nuestros Managers (Fachadas)
-from config import init_directories, logger, VALID_PREFIXES
+from config import init_directories, logger, VALID_PREFIXES, DATA_DIR
 from security_manager import SecurityManager
 from cloud_manager import CloudManager
 from inventory_manager import InventoryManager
@@ -63,34 +63,79 @@ class AppOrchestrator:
                 self.print_error(f"Error borrando {path.name}: {e}")
                 return
 
+    def _validate_and_sync_key(self, key_type: str, password: str):
+        """
+        Valida la contraseña contra un archivo testigo en la nube.
+        Si no existe, lo crea.
+        key_type: 'master' o 'csv'
+        """
+        witness_name = f"witness_{key_type}.7z"
+        local_witness = DATA_DIR / "temp" / witness_name
+        
+        self.print_info(f"Validando clave {key_type} con la nube...")
+
+        # 1. Intentar bajar el testigo
+        if self.cloud.download_file(witness_name, local_witness, silent=True):
+            # 2. Si existe, validar
+            is_valid = self.security.verify_password_with_witness(local_witness, password)
+            self.safe_delete(local_witness)
+            
+            if is_valid:
+                self.print_success(f"Clave {key_type} VERIFICADA correctamente.")
+                return True
+            else:
+                self.print_error(f"CLAVE {key_type.upper()} INCORRECTA. No coincide con la nube.")
+                return False
+        else:
+            # 3. Si no existe, crear y subir (Primera vez)
+            self.print_info(f"Creando testigo de seguridad para {key_type}...")
+            if self.security.create_password_witness(local_witness, password):
+                if self.cloud.upload_file(local_witness, witness_name):
+                    self.print_success(f"Testigo {key_type} creado y subido.")
+                    self.safe_delete(local_witness)
+                    return True
+            return False
+
     # --- INICIALIZACIÓN ---
 
     def start(self):
         """Arranque de la aplicación."""
         init_directories()
-        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.3")
+        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.4")
 
-        # 1. Autenticación DOBLE
+        # 1. Autenticación DOBLE con REINTENTO
         try:
             print(f"{Fore.YELLOW}🔐 Paso 1: Autenticación{Style.RESET_ALL}")
             
             # A. Password Maestra (Archivos)
-            master_pass = getpass.getpass("   🔑 Ingrese Contraseña MAESTRA (para archivos): ")
-            if not master_pass: raise ValueError("La contraseña maestra no puede estar vacía.")
+            while True:
+                m_pass = getpass.getpass("   🔑 Contraseña MAESTRA (Archivos): ")
+                if not m_pass: continue
+                m_pass_conf = getpass.getpass("   🔑 Confirme MAESTRA: ")
+                if m_pass == m_pass_conf: break
+                self.print_error("Las contraseñas no coinciden.")
             
             # B. Password CSV (Índice)
-            csv_pass = getpass.getpass("   🔑 Ingrese Contraseña CSV (para índice): ")
-            if not csv_pass: raise ValueError("La contraseña CSV no puede estar vacía.")
+            while True:
+                c_pass = getpass.getpass("   🔑 Contraseña CSV (Índice): ")
+                if not c_pass: continue
+                c_pass_conf = getpass.getpass("   🔑 Confirme CSV: ")
+                if c_pass == c_pass_conf: break
+                self.print_error("Las contraseñas no coinciden.")
 
-            if master_pass == csv_pass:
+            if m_pass == c_pass:
                 print(f"{Fore.RED}⚠️  ADVERTENCIA: Se recomienda usar contraseñas diferentes.{Style.RESET_ALL}")
             
-            # Inicializamos los Managers
-            self.security = SecurityManager(master_pass)
+            # Inicializamos Managers
+            self.security = SecurityManager(m_pass)
             self.cloud = CloudManager()
-            self.inventory = InventoryManager(csv_pass) # Pasamos la clave CSV aquí
+            self.inventory = InventoryManager(c_pass) 
             
-            self.print_success("Sistemas inicializados correctamente.")
+            # VALIDACIÓN REMOTA (Seguridad Extra)
+            if not self._validate_and_sync_key('master', m_pass): sys.exit(1)
+            if not self._validate_and_sync_key('csv', c_pass): sys.exit(1)
+
+            self.print_success("Sistemas inicializados y validados.")
             
         except Exception as e:
             self.print_error(f"Error de inicio: {e}")
@@ -102,7 +147,7 @@ class AppOrchestrator:
 
     def show_menu(self):
         print(f"\n{Fore.BLUE}--- MENÚ PRINCIPAL ---{Style.RESET_ALL}")
-        print("1. 📤 MODO SUBIDA (Detecta Duplicados)")
+        print("1. 📤 MODO SUBIDA (Rápido + Validado)")
         print("2. 📥 MODO DESCARGA (Explorador Visual)")
         print("3. 🔍 CONSULTAR ÍNDICE")
         print("4. 🔧 MANTENIMIENTO Y ESTADO")
@@ -124,16 +169,19 @@ class AppOrchestrator:
 
     def run_upload_mode(self):
         """
-        MODO SUBIDA MEJORADO (Visualización profesional)
+        MODO SUBIDA MEJORADO (Compresión Store + Estructura Plana)
         """
         self.print_header("MODO SUBIDA")
         
         path_str = input("📁 Carpeta PADRE a procesar: ").strip().replace('"', '')
         source_path = Path(path_str)
-        if not source_path.exists(): return self.print_error("La ruta no existe.")
+        
+        if not source_path.exists():
+            return self.print_error("La ruta no existe.")
 
         carpetas_validas = self.cloud.scan_local_folders(source_path)
-        if not carpetas_validas: return self.print_error("No se encontraron subcarpetas válidas.")
+        if not carpetas_validas:
+            return self.print_error("No se encontraron subcarpetas con prefijos válidos.")
 
         confirm = input(f"¿Procesar {len(carpetas_validas)} carpetas? (s/n): ")
         if confirm.lower() != 's': return
@@ -147,9 +195,7 @@ class AppOrchestrator:
         for idx, carpeta in enumerate(carpetas_validas, 1):
             try:
                 prefijo = carpeta.name.split('_')[0] if '_' in carpeta.name else carpeta.name[:3].upper()
-                if prefijo not in self.inventory.df['prefijo'].unique():
-                     pass
-
+                
                 # VALIDACIÓN DE DUPLICADOS
                 if self.inventory.check_exists(prefijo, carpeta.name):
                     print(f"{Fore.YELLOW}⚠️  [{idx}/{total_files}] Saltando duplicado: {carpeta.name}{Style.RESET_ALL}")
@@ -159,11 +205,9 @@ class AppOrchestrator:
                 # Preparación de datos
                 size_mb = self.security.get_size_mb(carpeta)
                 
-                # FEEDBACK VISUAL MEJORADO
                 print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
                 print(f"{Fore.YELLOW}📤 Procesando: {carpeta.name} (Size: {size_mb} MB) - ({idx} de {total_files}){Style.RESET_ALL}")
 
-                # A. Generación de metadatos
                 next_global, next_prefix = self.inventory.get_next_ids(prefijo)
                 hash_nombre = self.security.generate_filename_hash(carpeta.name)
                 nombre_orig_encrypted = self.security.encrypt_text(carpeta.name)
@@ -177,10 +221,13 @@ class AppOrchestrator:
                     "processed_date": fecha_fmt
                 }
 
-                # B. Compresión (con timer)
-                print(f"{Fore.CYAN}📦 Comprimiendo y Encriptando...{Style.RESET_ALL}")
+                # B. Compresión (STORE - Rápida)
+                print(f"{Fore.CYAN}📦 Encriptando (Modo Store)...{Style.RESET_ALL}")
                 start_compress = time.time()
-                dest_7z = source_path / f"{hash_nombre}.7z"
+                
+                # Nombre del archivo final: hash.7z
+                filename_7z = f"{hash_nombre}.7z"
+                dest_7z = source_path / filename_7z # Local temporal
                 
                 success = self.security.compress_encrypt_7z(carpeta, dest_7z, metadata=metadata_json)
                 
@@ -193,16 +240,16 @@ class AppOrchestrator:
                         'id_global': next_global, 'id_prefix': next_prefix, 'prefijo': prefijo,
                         'nombre_original': carpeta.name, 'nombre_original_encrypted': nombre_orig_encrypted,
                         'nombre_encriptado': hash_nombre, 'ruta_relativa': f"{prefijo}/",
-                        'carpeta_hija': f"{hash_nombre}.7z", 'tamaño_mb': size_mb,
+                        'carpeta_hija': filename_7z, 'tamaño_mb': size_mb,
                         'hash_md5': md5_hash, 'fecha_procesado': fecha_fmt, 'notas': "Auto Upload"
                     }
                     self.inventory.add_record(record)
                     
-                    # D. Subida a la Nube (con barra de progreso Rclone visible)
-                    cloud_path = f"{prefijo}/{hash_nombre}.7z"
-                    start_upload = time.time()
+                    # D. Subida a la Nube (Estructura PLANA)
+                    # Ahora subimos a: PREFIJO/hash.7z directamente
+                    cloud_path = f"{prefijo}/{filename_7z}"
                     
-                    # CloudManager.upload_file ya tiene show_progress=True configurado
+                    start_upload = time.time()
                     if self.cloud.upload_file(dest_7z, cloud_path):
                         upl_time = time.time() - start_upload
                         print(f"{Fore.GREEN}   ✅ Subida finalizada en {upl_time:.1f}s.{Style.RESET_ALL}")
@@ -226,7 +273,6 @@ class AppOrchestrator:
             encrypted_index_path = self.inventory.save_encrypted_backup(self.security, prefix="UPLOAD")
             
             if encrypted_index_path:
-                # Subida silenciosa del índice (no necesitamos barra para esto tan pequeño)
                 if self.cloud.upload_file(encrypted_index_path, "index_main.7z"):
                     self.print_success("Índice actualizado correctamente.")
                 else:
@@ -236,44 +282,40 @@ class AppOrchestrator:
 
     def run_download_mode(self):
         """
-        MEJORA: Nuevo flujo jerárquico con selección numérica y feedback detallado.
+        MODO DESCARGA EXPLORADOR (Igual funcionalidad)
         """
         self.print_header("MODO DESCARGA EXPLORADOR")
         
-        # 1. Intentar sincronizar índice primero (Silencioso para no ensuciar)
+        # 1. Intentar sincronizar índice primero
         self.print_info("Sincronizando índice...")
         local_idx_enc = Path("data/temp/index_main_download.7z")
         if self.cloud.download_file("index_main.7z", local_idx_enc, silent=True):
-            # Desencriptar índice con Clave CSV
             if self.inventory.load_from_encrypted(self.security, local_idx_enc):
                 self.print_success("Índice actualizado.")
-            self.safe_delete(local_idx_enc) # Borrado seguro
+            self.safe_delete(local_idx_enc)
         else:
-            self.print_info("No se pudo descargar índice remoto. Usando local.")
+            self.print_info("Usando índice local.")
 
-        # 2. Mostrar Prefijos Disponibles (Agrupados)
+        # 2. Mostrar Prefijos Disponibles
         summary = self.inventory.get_prefixes_summary()
         if summary.empty: return self.print_error("Índice vacío.")
 
         print(f"\n{Fore.CYAN}📂 PREFIJOS DISPONIBLES:{Style.RESET_ALL}")
-        # Agregamos un índice visual (#) para facilitar selección
         summary = summary.reset_index(drop=True)
-        summary.index = summary.index + 1 # Empezar en 1
-        # Ajuste nombres columnas para visualización
+        summary.index = summary.index + 1 
         summary_view = summary.rename(columns={'prefijo': 'Prefijo', 'count': 'Cant. Archivos'})
         print(tabulate(summary_view, headers='keys', tablefmt='simple'))
 
-        # 3. Seleccionar Prefijo por ID
+        # 3. Seleccionar Prefijo
         sel_idx = input("\n👉 Seleccione el NÚMERO (#) del Prefijo (o 0 para Salir): ").strip()
         if not sel_idx.isdigit() or int(sel_idx) == 0: return
 
         try:
-            # Obtenemos el nombre del prefijo real basado en el número seleccionado
             sel_prefix = summary.iloc[int(sel_idx)-1]['prefijo']
         except IndexError:
             return self.print_error("Número inválido.")
 
-        # 4. Mostrar Archivos del Prefijo
+        # 4. Mostrar Archivos
         files_df = self.inventory.get_files_by_prefix(sel_prefix)
         if files_df.empty: return self.print_error("Carpeta vacía.")
 
@@ -281,7 +323,7 @@ class AppOrchestrator:
         view_df = files_df[['id_global', 'nombre_original', 'nombre_encriptado', 'tamaño_mb']]
         print(tabulate(view_df, headers=['ID', 'Nombre Real', 'Nombre 7z', 'MB'], tablefmt='simple', showindex=False))
 
-        # 5. Selección de Archivos (Múltiple)
+        # 5. Selección de Archivos
         selection = input("\n👉 Ingrese IDs a descargar (ej: 3,4,5) o 'TODO': ").strip()
         if not selection: return
 
@@ -297,38 +339,30 @@ class AppOrchestrator:
 
         if to_download.empty: return self.print_error("Ningún archivo seleccionado.")
 
-        # 6. Ejecutar Descarga (Iterativa con Feedback Mejorado)
+        # 6. Ejecutar Descarga
         total_items = len(to_download)
         self.print_info(f"Iniciando descarga de {total_items} archivos...")
 
         for i, (idx, row) in enumerate(to_download.iterrows(), 1):
-            # Datos para feedback
             nombre_real = row['nombre_original']
             size_mb = row['tamaño_mb']
             
-            # Rutas
+            # Ruta remota PLANA: PREFIJO/hash.7z
             remote_path = f"{row['ruta_relativa']}{row['nombre_encriptado']}.7z"
             local_7z = Path(f"data/descargas/{row['nombre_encriptado']}.7z")
             local_dest_folder = Path(f"data/desencriptados/{nombre_real}")
 
-            # Feedback Visual Mejorado
             print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}📥 Bajando: {nombre_real} (Size: {size_mb} MB) - ({i} de {total_items}){Style.RESET_ALL}")
             
-            # A. Descarga (Mostrando barra de rclone)
             start_dl = time.time()
-            # Pass silent=False para ver barra de rclone
             if self.cloud.download_file(remote_path, local_7z, silent=False):
                 duration = time.time() - start_dl
                 print(f"{Fore.GREEN}   ✅ Descarga completada en {duration:.1f}s.{Style.RESET_ALL}")
 
-                # B. Descompresión
                 print(f"{Fore.YELLOW}📦 Desencriptando y descomprimiendo...{Style.RESET_ALL}")
-                # Desencriptar contenido con Password Maestra
                 if self.security.decrypt_extract_7z(local_7z, local_dest_folder):
                     self.print_success(f"Archivo restaurado en: {local_dest_folder}")
-                    
-                    # C. Limpieza Inmediata (Con safe_delete reforzado)
                     self.safe_delete(local_7z)
                 else:
                     self.print_error("Fallo en descompresión (contraseña incorrecta?).")
@@ -346,11 +380,9 @@ class AppOrchestrator:
 
     def run_maintenance_mode(self):
         self.print_header("MANTENIMIENTO")
-        
         print("1. Verificar conexión a Nube")
         print("2. Limpiar temporales")
         op = input("Opción: ")
-        
         if op == "1":
             if self.cloud.check_connection(): self.print_success("Conexión Rclone OK")
             else: self.print_error("Fallo conexión Rclone")
