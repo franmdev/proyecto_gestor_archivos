@@ -23,6 +23,10 @@ load_dotenv()  # Carga el archivo .env si existe
 # Nombre del remote en rclone (ej: mi_remote)
 RCLONE_REMOTE = os.getenv("RCLONE_REMOTE_NAME", "mi_remote")
 
+# NUEVO: Ruta base en la nube (ej: "backup")
+# Si no se define en .env, usa vacío (raíz)
+RCLONE_REMOTE_PATH = os.getenv("RCLONE_REMOTE_PATH", "")
+
 # Ruta al ejecutable 7-Zip
 # Intenta leer del .env, si no, usa valores por defecto según el sistema operativo
 SEVEN_ZIP_PATH = os.getenv("SEVEN_ZIP_PATH", "7za.exe" if os.name == 'nt' else "7z")

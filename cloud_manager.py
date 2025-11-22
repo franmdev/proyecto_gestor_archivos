@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Optional, Union
 
 # Configuración
-from config import logger, RCLONE_REMOTE, VALID_PREFIXES, DATA_DIR
+# AGREGADO: Importamos RCLONE_REMOTE_PATH
+from config import logger, RCLONE_REMOTE, RCLONE_REMOTE_PATH, VALID_PREFIXES, DATA_DIR
 
 class CloudManager:
     """
@@ -16,6 +17,7 @@ class CloudManager:
 
     def __init__(self):
         self.remote = RCLONE_REMOTE
+        self.base_path = RCLONE_REMOTE_PATH # La carpeta base del .env
         # Obtener ruta base desde .env
         self.rclone_path_env = os.getenv("RCLONE_PATH") 
         self.rclone_exe = self._find_rclone()
@@ -44,6 +46,23 @@ class CloudManager:
         
         # Fallback ciego
         return "rclone"
+
+    def _build_remote_path(self, subpath: str) -> str:
+        """
+        MEJORA: Construye la ruta completa incluyendo la carpeta base del .env.
+        Ej: Si base="backup" y subpath="DOC/file.7z" -> "remote:backup/DOC/file.7z"
+        """
+        # Normalizar slashes para rclone (siempre /)
+        subpath = subpath.replace("\\", "/")
+        
+        if self.base_path:
+            # Asegurar que no haya slash duplicado
+            base = self.base_path.strip("/")
+            clean_sub = subpath.strip("/")
+            return f"{self.remote}:{base}/{clean_sub}"
+        else:
+            # Comportamiento original (Raíz)
+            return f"{self.remote}:/{subpath}"
 
     def _run_rclone(self, args: List[str], timeout: int = 3600, show_progress: bool = False) -> bool:
         """
@@ -129,10 +148,13 @@ class CloudManager:
 
     def upload_file(self, local_path: Path, remote_path: str) -> bool:
         """Sube un archivo específico con barra de progreso."""
+        # MEJORA: Usar constructor de ruta inteligente
+        full_dest = self._build_remote_path(remote_path)
+        
         return self._run_rclone([
             "copy", 
             str(local_path), 
-            f"{self.remote}:/{remote_path}",
+            full_dest,
             "--progress",       # Barra de progreso visual
             "--stats-one-line"  # Formato limpio
         ], show_progress=True)
@@ -145,9 +167,12 @@ class CloudManager:
         # Asegurar directorio destino
         local_dest.parent.mkdir(parents=True, exist_ok=True)
         
+        # MEJORA: Usar constructor de ruta inteligente
+        full_src = self._build_remote_path(remote_path)
+        
         return self._run_rclone([
             "copyto", # copyto permite renombrar/definir destino exacto
-            f"{self.remote}:/{remote_path}",
+            full_src,
             str(local_dest),
             "--progress",
             "--stats-one-line"
@@ -155,10 +180,13 @@ class CloudManager:
 
     def sync_up(self, local_dir: Path, remote_dir: str) -> bool:
         """Sincroniza una carpeta local hacia la nube (Unidireccional)."""
+        # MEJORA: Usar constructor de ruta inteligente
+        full_dest = self._build_remote_path(remote_dir)
+        
         return self._run_rclone([
             "sync",
             str(local_dir),
-            f"{self.remote}:/{remote_dir}",
+            full_dest,
             "--progress",
             "--create-empty-src-dirs"
         ], show_progress=True)
