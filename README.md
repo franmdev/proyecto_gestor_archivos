@@ -1,30 +1,38 @@
-# 🔐 Gestor de Archivos Encriptados (Secure Cloud Vault) v2.2
+# 🔐 Gestor de Archivos Encriptados (Secure Cloud Vault) v2.5
 
-> **Sistema de preservación digital de "Defensa en Profundidad" utilizando arquitectura Facade, encriptación AES-256 multinivel y sincronización cloud vía Rclone.**
+> **Sistema de preservación digital con arquitectura Facade, encriptación AES-256 Zero-Knowledge y optimización de red "Smart Upload" para nubes públicas.**
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Security](https://img.shields.io/badge/Encryption-AES256%20%2B%207z-red)
+![Network](https://img.shields.io/badge/Network-Smart%20Routing%20Fix-orange)
+
+---
+
+## 📚 Documentación Técnica Detallada
+
+Para comprender la profundidad del sistema, consulte los siguientes documentos en la carpeta `docs/`:
+
+* **[🏗️ Arquitectura del Sistema](docs/ARCHITECTURE.md):** Explica el patrón Facade, el flujo "Smart Upload" y la gestión de datos.
+* **[🛡️ Modelo de Seguridad](docs/SECURITY.md):** Detalles sobre criptografía, testigos de validación (Witness Files) y doble autenticación.
+* **[🔧 Solución de Problemas](docs/TROUBLESHOOTING.md):** Guía para errores comunes (WinError 5, Excel, Red).
 
 ---
 
 ## 📋 Descripción General
 
-Este proyecto es una solución robusta para la gestión, encriptación y respaldo de archivos sensibles en la nube. A diferencia de las soluciones comerciales, este sistema garantiza **Privacidad Cero-Conocimiento** (Zero-Knowledge Privacy) mediante un esquema de doble autenticación y ofuscación total de metadatos.
+Este proyecto es una solución robusta para la gestión y respaldo de archivos sensibles en la nube. A diferencia de las soluciones comerciales, garantiza **Privacidad Cero-Conocimiento** mediante un esquema de doble autenticación y nombres de archivo ofuscados.
 
-El sistema actúa como un orquestador inteligente entre el sistema de archivos local, el motor de compresión 7-Zip y el gestor de transferencia Rclone.
+Integra una lógica de **"Smart Upload"** diseñada específicamente para combatir el *routing subóptimo* (BGP) común en servicios como OneDrive o Google Drive, garantizando velocidades de transferencia óptimas.
 
 ### 🚀 Características Principales
 
-* **Arquitectura Facade:** Código modular y mantenible dividido en Managers (Security, Cloud, Inventory).
-* **Seguridad de Grado Militar:**
-    * Encriptación de contenido: AES-256 (vía 7z).
-    * Encriptación de nombres: Fernet (Simétrica).
-    * Ofuscación: Nombres de archivo hash SHA-256 deterministas.
-* **Doble Factor de Autenticación Lógica:** Contraseña separada para archivos (Master) y para el índice (CSV).
-* **Gestión de Inventario Inteligente:** Base de datos local (CSV) con prevención de duplicados y manejo de metadatos.
-* **Sincronización Cloud Agnostica:** Compatible con cualquier proveedor soportado por Rclone (Drive, S3, OneDrive, Dropbox, etc.).
-* **Resiliencia:** Recuperación ante desastres (lectura de metadatos inyectados) y manejo de errores de sistema de archivos (WinError 5).
+* **Smart Upload (Routing Fix):** Monitoreo en tiempo real de la velocidad de subida. Si detecta una ruta lenta (<8 MB/s), reinicia la conexión automáticamente para buscar una mejor ruta de red.
+* **Modo "Store" Ultrarrápido:** Utiliza compresión `-mx=0` (solo almacenamiento) con encriptación AES-256 `-mhe=on`. Prioriza la velocidad de cifrado para grandes volúmenes de datos.
+* **Seguridad de Grado Militar:** Encriptación AES-256 multinivel (Contenido + Nombres + Índice).
+* **Validación Remota (Witness):** Verifica las contraseñas contra archivos testigo en la nube antes de iniciar operaciones, evitando corrupción de datos por claves erróneas.
+* **Gestión de Inventario:** Base de datos local (CSV) compatible con Excel (`utf-8-sig`), detección de duplicados y recuperación ante desastres.
+* **Descarga Jerárquica:** Explorador visual de archivos por prefijos en la terminal.
 
 ---
 
@@ -66,19 +74,20 @@ pip install -r requirements.txt
 
 ### 4. Configuración de Variables (.env)
 
-Crea un archivo `.env` en la raíz basado en el siguiente esquema:
+Crea un archivo `.env` en la raíz. Nota: RCLONE_REMOTE_PATH define la carpeta contenedora en la nube.
 
 ```ini
-# Ruta a la carpeta donde reside el ejecutable de rclone (opcional si está en PATH)
+# Ruta a la carpeta de rclone (opcional si está en PATH)
 RCLONE_PATH=C:\_rclone
 
 # Nombre del remote configurado en 'rclone config'
 RCLONE_REMOTE_NAME=mi_remote_seguro
 
-# Ruta base en la nube
-RCLONE_REMOTE_PATH=/
+# Carpeta base en la nube (El sistema la creará automáticamente)
+# Ejemplo: Los archivos irán a mi_remote_seguro:backup/DOC/...
+RCLONE_REMOTE_PATH=backup
 
-# Ruta a la carpeta donde reside 7z.exe o 7za.exe
+# Ruta a la carpeta de 7z (portable o instalada)
 SEVEN_ZIP_PATH=C:\_rclone\_7z\x64
 
 # Configuración General
@@ -98,10 +107,10 @@ python main.py
 
 ### Flujo de Trabajo
 
-- **Login:** Ingrese su Contraseña Maestra y Contraseña CSV.
-- **Modo Subida:** Arrastre carpetas. El sistema detectará prefijos válidos (DOC, FIN, etc.), encriptará y subirá solo si no existen duplicados.
-- **Modo Descarga:** Navegue jerárquicamente (Prefijo -> Lista -> Selección) para recuperar archivos.
-- **Mantenimiento:** Verifique la conexión con la nube y limpie temporales.
+- **Login:** Ingrese y confirme su Contraseña Maestra y Contraseña CSV. El sistema validará contra la nube.
+- **Modo Subida:** Arrastre carpetas. El sistema detectará prefijos, validará duplicados y aplicará "Smart Upload" si el archivo es grande (>500MB).
+- **Modo Descarga:** Seleccione un Prefijo numéricamente -> Vea la lista -> Seleccione IDs para descargar.
+- **Mantenimiento:** Verifique la conexión y limpie temporales.
 
 ---
 
@@ -125,4 +134,4 @@ GESTOR/
 
 Este proyecto está bajo la Licencia MIT. Consulte el archivo LICENSE para más detalles.
 
-Desarrollado con ❤️ y Paranoia para la Preservación Digital.
+Desarrollado con ❤️, Paranoia y Optimización de Red.

@@ -1,48 +1,38 @@
 # 🛡️ Modelo de Seguridad
 
-Este documento detalla las medidas criptográficas y de diseño implementadas para garantizar la confidencialidad e integridad de los datos.
+Este documento detalla las medidas implementadas para garantizar la confidencialidad, integridad y disponibilidad de los datos.
 
-## 1. Criptografía
+## 1. Validación de Identidad (Witness Files)
 
-### Derivación de Claves (KDF)
-* **Algoritmo:** PBKDF2HMAC (Password-Based Key Derivation Function 2).
-* **Hashing:** SHA-256.
-* **Iteraciones:** 100,000 (Estándar NIST para resistencia a fuerza bruta).
-* **Salt:** Salt fijo de aplicación para garantizar determinismo en la recuperación, combinado con entropía de la contraseña del usuario.
+El sistema implementa un mecanismo de **"Archivos Testigo"** para validar que las contraseñas ingresadas son correctas *antes* de intentar desencriptar datos críticos o corromper el índice.
+
+### Flujo de Validación
+1.  Al iniciar, el sistema busca `witness_master.7z` y `witness_csv.7z` en la carpeta temporal de la nube.
+2.  **Si existen:** Se descargan y se intenta una operación de "Test" (`7z t`) con la contraseña ingresada.
+    * Si falla: Se alerta al usuario y se detiene el programa.
+    * Si éxito: Se permite el acceso.
+3.  **Si no existen:** El sistema crea archivos pequeños encriptados con las contraseñas actuales y los sube a la nube para futuras validaciones.
+
+Este mecanismo previene el error común de subir archivos encriptados con una contraseña errónea (typo), lo que los haría irrecuperables.
+
+## 2. Criptografía
+
+### Derivación de Claves
+* **Algoritmo:** PBKDF2HMAC (SHA-256).
+* **Iteraciones:** 100,000 (Estándar NIST).
+* **Salt:** Fijo por aplicación para permitir determinismo en la recuperación de nombres.
 
 ### Encriptación de Contenido (Data at Rest)
 * **Herramienta:** 7-Zip (AES-256).
-* **Modo:** `-mhe=on` (Encrypt Headers). Esto oculta no solo el contenido de los archivos, sino también sus nombres originales y la estructura de carpetas interna dentro del contenedor `.7z`.
+* **Modo:** Store (`-mx=0`) + Header Encryption (`-mhe=on`).
+* **Protección:** Oculta contenido, nombres de archivos originales y estructura de directorios.
 
 ### Encriptación de Metadatos
-* **Algoritmo:** Fernet (Implementación simétrica sobre AES-128 en modo CBC con firma HMAC-SHA256).
-* **Uso:** Se utiliza para encriptar el "Nombre Original" del archivo dentro del CSV y dentro del `metadatos.json` inyectado en cada archivo.
+* **Algoritmo:** Fernet (AES-128 CBC + HMAC).
+* **Uso:** Encriptación del nombre original del archivo almacenado en el CSV y en el `metadatos.json` inyectado.
 
-### Hashing e Integridad
-* **MD5:** Verificación de integridad de contenido (detección de corrupción en transferencia).
-* **SHA-256:** Generación de nombres de archivo ofuscados (deterministas) para almacenamiento en la nube.
+## 3. Doble Factor Lógico
 
-## 2. Estrategia de Doble Autenticación
-
-El sistema implementa una separación de preocupaciones de seguridad:
-
-1.  **Contraseña Maestra (Master Password):**
-    * Utilizada para encriptar/desencriptar los contenedores `.7z` de los archivos de datos (`DOC`, `FIN`, etc.).
-    * Utilizada para derivar la clave Fernet de los nombres de archivo.
-
-2.  **Contraseña de Índice (CSV Password):**
-    * Utilizada **exclusivamente** para encriptar el archivo `index_main.csv` (que se guarda como `index_main.7z`).
-    * **Beneficio:** Si el archivo de índice es comprometido, el atacante no puede acceder a los archivos de datos. Si un archivo de datos es comprometido, el atacante no tiene el mapa completo de la información.
-
-## 3. Recuperación de Desastres (Disaster Recovery)
-
-El sistema está diseñado para ser resiliente a la pérdida total de la base de datos local (`index_main.csv`).
-
-**Mecanismo de Inyección de Metadatos:**
-Cada archivo `.7z` subido contiene un archivo oculto `metadatos.json` con:
-* Hash del nombre.
-* Token Fernet del nombre original.
-* Timestamp.
-
-**Escenario de Recuperación:**
-En caso de pérdida del CSV, un script de recuperación (futura implementación) puede descargar todos los `.7z`, extraer sus `metadatos.json` usando la Contraseña Maestra y reconstruir el índice CSV desde cero.
+* **Contraseña Maestra:** Protege los archivos de datos (`.7z`).
+* **Contraseña CSV:** Protege exclusivamente el índice (`index_main.csv`).
+* **Beneficio:** Compromiso compartimentado. Acceder al índice no da acceso a los archivos, y viceversa.

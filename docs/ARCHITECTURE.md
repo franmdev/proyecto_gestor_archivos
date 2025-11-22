@@ -1,59 +1,46 @@
-### 2. Documentación Técnica: `docs/ARCHITECTURE.md`
-Este archivo es para desarrolladores. Explica el *porqué* de las decisiones técnicas.
+### 2. `docs/ARCHITECTURE.md` (Actualizado con Smart Upload)
+*Explica la lógica de red y la decisión de usar compresión Store.*
 
 ```markdown
 # 🏗️ Arquitectura del Sistema
 
 ## Patrón de Diseño: Facade (Fachada)
 
-El proyecto ha migrado de una arquitectura de servicios dispersos a un patrón **Facade**. Esto se decidió para reducir la complejidad cognitiva y el acoplamiento entre componentes.
+El sistema utiliza un patrón **Facade** dividiendo la complejidad en 4 Managers principales, coordinados por un `AppOrchestrator`.
 
-### Componentes Principales (Managers)
+### Componentes Principales
 
-El sistema se divide en 4 módulos de alto nivel, cada uno responsable de un dominio específico:
+1.  **`AppOrchestrator` (`main.py`)**: Interfaz de usuario (CLI) y control de flujo. Gestiona la interacción visual y los menús.
+2.  **`SecurityManager`**: Encargado de la criptografía (Fernet, PBKDF2) y la compresión (7-Zip).
+3.  **`InventoryManager`**: Gestiona el estado (Pandas/CSV), validación de duplicados y compatibilidad con Excel.
+4.  **`CloudManager`**: Gestiona la comunicación con Rclone, incluyendo la lógica de optimización de red.
 
-1.  **`AppOrchestrator` (`main.py`)**:
-    * **Rol:** Controlador y Vista.
-    * **Responsabilidad:** Gestiona la interacción con el usuario (CLI), captura inputs y coordina a los managers. No contiene lógica de negocio profunda, solo lógica de flujo.
+---
 
-2.  **`SecurityManager` (`security_manager.py`)**:
-    * **Rol:** Caja Fuerte.
-    * **Responsabilidad:** Abstrae la complejidad de las librerías criptográficas.
-    * **Funciones Clave:**
-        * Wrapper de `subprocess` para 7-Zip.
-        * Generación de claves PBKDF2HMAC.
-        * Encriptación simétrica Fernet.
-        * Hashing SHA-256 determinista para nombres de archivo.
+## 🔄 Lógica "Smart Upload" (Routing Fix)
 
-3.  **`InventoryManager` (`inventory_manager.py`)**:
-    * **Rol:** Cerebro de Datos.
-    * **Responsabilidad:** Gestión del estado del sistema mediante Pandas.
-    * **Funciones Clave:**
-        * CRUD sobre el índice CSV.
-        * Validación de duplicados (`check_exists`).
-        * Generación de IDs autoincrementales.
-        * Persistencia segura (guardado y carga de índice encriptado).
+Uno de los desafíos principales al usar nubes públicas (OneDrive, GDrive) es el **Routing BGP Subóptimo**, donde una conexión puede quedar atrapada en una ruta lenta (ej: 2 MB/s) aunque el ancho de banda disponible sea mayor (ej: 20 MB/s).
 
-4.  **`CloudManager` (`cloud_manager.py`)**:
-    * **Rol:** Brazo Ejecutor.
-    * **Responsabilidad:** Interfaz con el sistema de archivos y la nube.
-    * **Funciones Clave:**
-        * Wrapper de `rclone` via `subprocess`.
-        * Escaneo inteligente de carpetas locales.
-        * Gestión de transferencias (Upload/Download).
+El sistema implementa una estrategia de mitigación activa en `CloudManager._smart_upload`:
 
-## Flujo de Datos (Data Flow)
+1.  **Detección:** Se analiza el flujo de datos de Rclone en tiempo real (lectura de `stdout` línea por línea).
+2.  **Evaluación Temprana:**
+    * **T=10s y T=20s:** Si la velocidad es < **8 MB/s**, se asume una mala ruta.
+    * **T=30s:** Si la velocidad es < **15 MB/s**, se considera subóptima.
+3.  **Acción:** Si se cumplen las condiciones de baja velocidad, el sistema **mata el proceso de rclone** y reintenta la conexión (hasta 3 veces). Esto fuerza al ISP a negociar una nueva ruta BGP.
+4.  **Comandos Optimizados:** Se inyectan flags específicos (`--onedrive-chunk-size 200M`, `--buffer-size 200M`) para maximizar el throughput en archivos grandes.
 
-### Proceso de Subida (Upload)
-1.  `CloudManager` escanea disco local -> Lista de `Path`.
-2.  `InventoryManager` verifica existencia -> Filtra duplicados.
-3.  `SecurityManager` genera metadatos (Hash, Nombre Encriptado).
-4.  `SecurityManager` comprime y encripta a `.7z` temporal.
-5.  `CloudManager` sube el `.7z` a Rclone.
-6.  `InventoryManager` registra la transacción en memoria.
-7.  `InventoryManager` genera backup encriptado del índice.
-8.  `CloudManager` sube el índice actualizado.
+---
 
-### Manejo de Errores y Resiliencia
-* **WinError 5 (Access Denied):** Implementado `safe_delete` con lógica de reintento y espera (`time.sleep`) para manejar el bloqueo de archivos por parte del SO/Antivirus tras operaciones de 7-Zip.
-* **Codificación:** Uso estricto de `utf-8-sig` para garantizar compatibilidad total con Microsoft Excel en la lectura de logs y CSVs.
+## 📦 Estrategia de Compresión y Almacenamiento
+
+### Modo "Store" (-mx=0)
+Se ha cambiado la estrategia de compresión de Ultra (`-mx=9`) a Store (`-mx=0`).
+* **Razón:** La mayoría de los archivos multimedia (fotos, videos) ya están comprimidos. Intentar recomprimirlos consume mucha CPU y tiempo sin ganancia real.
+* **Beneficio:** La "encriptación" se vuelve instantánea, limitada solo por la velocidad de disco I/O, permitiendo que el cuello de botella sea la red (donde actúa el Smart Upload).
+* **Seguridad:** El flag `-mhe=on` (Header Encryption) se mantiene, garantizando que la estructura interna y los nombres de archivo sean invisibles.
+
+### Estructura Plana en Nube
+Para evitar redundancia de carpetas, el sistema sube los archivos directamente bajo su prefijo en la carpeta base definida en `.env`.
+* **Antes:** `remote:/DOC/archivo_hash.7z/archivo_hash.7z`
+* **Ahora:** `remote:backup/DOC/archivo_hash.7z`

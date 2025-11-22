@@ -1,25 +1,23 @@
 # 🔧 Solución de Problemas (Troubleshooting)
 
-### 1. Error: `[WinError 5] Access is denied`
-**Síntoma:** El programa falla al intentar borrar un archivo temporal `.7z` después de subirlo o descargarlo.
-**Causa:** Windows o el Antivirus mantienen el archivo "tomado" o escaneándolo milisegundos después de que 7-Zip lo cierra.
-**Solución:** El sistema ya incluye una función `safe_delete` que reintenta el borrado 3 veces con pausas. Si persiste, verifique que su antivirus no esté bloqueando la carpeta `data/temp`.
+### 1. Mensaje: "Velocidad baja... Reiniciando routing"
+**Síntoma:** La subida se detiene y vuelve a empezar varias veces.
+**Causa:** Esta es una **función**, no un error. El sistema ("Smart Upload") detectó que su conexión a la nube era inestable o lenta (< 8-15 MB/s) y está reiniciando la conexión para forzar una mejor ruta de internet.
+**Solución:** Deje que el sistema trabaje. Si falla 3 veces, el último intento se dejará correr hasta el final.
 
-### 2. Caracteres extraños en Excel (Ã±)
-**Síntoma:** Al abrir `index_main.csv` en Excel, las tildes y la 'ñ' se ven mal.
-**Solución:** El sistema guarda los CSV usando `utf-8-sig`. Asegúrese de abrir el archivo directamente. Si persiste, use la opción de Excel "Datos -> Obtener datos -> De texto/CSV" y seleccione "Origen de archivo: 65001: Unicode (UTF-8)".
+### 2. Error: `[WinError 5] Access is denied`
+**Síntoma:** Fallo al borrar archivos temporales.
+**Causa:** Bloqueo de archivo por Antivirus o el Sistema Operativo.
+**Solución:** El sistema incluye la función `safe_delete` que reintenta el borrado hasta 10 veces con pausas progresivas. Si ve este mensaje, es informativo; el sistema limpiará el archivo en la siguiente ejecución.
 
-### 3. Rclone no encontrado
-**Síntoma:** Error `FileNotFoundError` al iniciar.
-**Solución:**
-1.  Verifique que la ruta en `.env` bajo `RCLONE_PATH` sea correcta.
-2.  Si `RCLONE_PATH` apunta a una carpeta, asegúrese de que `rclone.exe` esté dentro.
+### 3. Caracteres extraños en Excel (Ã±)
+**Síntoma:** Tildes o Ñ mal visualizados en el CSV.
+**Solución:** El sistema utiliza codificación `utf-8-sig`. Excel debería abrirlo automáticamente bien. Si no, use "Datos -> Obtener datos -> De Texto/CSV -> UTF-8".
 
-### 4. Advertencia de Pandas "FutureWarning"
-**Síntoma:** Texto rojo en la consola sobre `DataFrame concatenation`.
-**Solución:** Este proyecto ya implementa la corrección (`dropna(how='all')`) en `InventoryManager`. Asegúrese de tener la última versión del código.
+### 4. Rclone no encontrado
+**Solución:** Verifique que `RCLONE_PATH` en su archivo `.env` apunte correctamente a la carpeta donde está `rclone.exe`.
 
-### 5. Duplicados no detectados
-**Síntoma:** Se sube un archivo que ya existía.
-**Causa:** El sistema valida duplicados basándose en la combinación exacta de `Prefijo` + `Nombre Original`.
-**Solución:** Si cambió el nombre de la carpeta origen localmente (ej: `DOC/Factura` a `DOC/Factura_Final`), el sistema lo tratará como un archivo nuevo. Esto es comportamiento esperado.
+### 5. Archivos Duplicados
+**Síntoma:** El sistema dice "Saltando duplicado".
+**Causa:** El sistema detecta que la combinación de `Prefijo` + `Nombre de Carpeta` ya existe en el índice para evitar redundancia.
+**Solución:** Si desea subir una nueva versión, cambie el nombre de la carpeta origen (ej: `Carpeta_v2`).
