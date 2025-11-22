@@ -1,7 +1,7 @@
 # inventory_manager.py
 import pandas as pd
 import shutil
-import time  # Nuevo import para manejo de esperas en restauración
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -25,7 +25,7 @@ class InventoryManager:
         """Carga el CSV local o crea uno vacío si no existe."""
         if self.csv_path.exists():
             try:
-                # MEJORA: encoding='utf-8-sig' para que Excel reconozca Ñ y tildes
+                # MEJORA: utf-8-sig para compatibilidad con Excel (Ñ/Tildes)
                 df = pd.read_csv(self.csv_path, encoding='utf-8-sig')
                 # Validar columnas mínimas
                 missing = [col for col in CSV_COLUMNS if col not in df.columns]
@@ -190,9 +190,8 @@ class InventoryManager:
         if security_manager.decrypt_extract_7z(archive_path, temp_extract, password=self.csv_password):
             restored_csv = temp_extract / "index_main.csv"
             if restored_csv.exists():
-                # Reemplazar actual
                 # MEJORA: Intentar mover con reintentos para evitar WinError 5 si el archivo está ocupado
-                time.sleep(0.5) 
+                time.sleep(0.5) # Pausa de seguridad
                 try:
                     shutil.move(str(restored_csv), str(self.csv_path))
                 except PermissionError:

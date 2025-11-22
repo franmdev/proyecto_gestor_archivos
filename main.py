@@ -3,6 +3,7 @@ import sys
 import getpass
 import time
 import os  # Necesario para unlink en safe_delete
+import pandas as pd # Necesario para manejo de selecciones
 from pathlib import Path
 from colorama import init, Fore, Style
 from tabulate import tabulate
