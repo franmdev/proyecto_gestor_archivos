@@ -101,7 +101,7 @@ class AppOrchestrator:
     def start(self):
         """Arranque de la aplicación."""
         init_directories()
-        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.4")
+        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.5")
 
         # 1. Autenticación DOBLE con REINTENTO
         try:
@@ -147,7 +147,7 @@ class AppOrchestrator:
 
     def show_menu(self):
         print(f"\n{Fore.BLUE}--- MENÚ PRINCIPAL ---{Style.RESET_ALL}")
-        print("1. 📤 MODO SUBIDA (Rápido + Validado)")
+        print("1. 📤 MODO SUBIDA (Smart Upload + Validado)")
         print("2. 📥 MODO DESCARGA (Explorador Visual)")
         print("3. 🔍 CONSULTAR ÍNDICE")
         print("4. 🔧 MANTENIMIENTO Y ESTADO")
@@ -169,7 +169,7 @@ class AppOrchestrator:
 
     def run_upload_mode(self):
         """
-        MODO SUBIDA MEJORADO (Compresión Store + Estructura Plana)
+        MODO SUBIDA MEJORADO (Visualización profesional + Lógica Smart)
         """
         self.print_header("MODO SUBIDA")
         
@@ -205,8 +205,9 @@ class AppOrchestrator:
                 # Preparación de datos
                 size_mb = self.security.get_size_mb(carpeta)
                 
+                # FEEDBACK VISUAL MEJORADO
                 print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
-                print(f"{Fore.YELLOW}📤 Procesando: {carpeta.name} (Size: {size_mb} MB) - ({idx} de {total_files}){Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}📤 Procesando: {carpeta.name} (Size: {size_mb:.2f} MB) - ({idx} de {total_files}){Style.RESET_ALL}")
 
                 next_global, next_prefix = self.inventory.get_next_ids(prefijo)
                 hash_nombre = self.security.generate_filename_hash(carpeta.name)
@@ -225,7 +226,6 @@ class AppOrchestrator:
                 print(f"{Fore.CYAN}📦 Encriptando (Modo Store)...{Style.RESET_ALL}")
                 start_compress = time.time()
                 
-                # Nombre del archivo final: hash.7z
                 filename_7z = f"{hash_nombre}.7z"
                 dest_7z = source_path / filename_7z # Local temporal
                 
@@ -245,11 +245,14 @@ class AppOrchestrator:
                     }
                     self.inventory.add_record(record)
                     
-                    # D. Subida a la Nube (Estructura PLANA)
+                    # D. Subida a la Nube (Estructura PLANA + Smart Upload)
                     # Ahora subimos a: PREFIJO/hash.7z directamente
                     cloud_path = f"{prefijo}/{filename_7z}"
                     
+                    print(f"{Fore.CYAN}⬆️  Iniciando transferencia...{Style.RESET_ALL}")
                     start_upload = time.time()
+                    
+                    # CloudManager.upload_file maneja internamente la lógica Smart/BGP
                     if self.cloud.upload_file(dest_7z, cloud_path):
                         upl_time = time.time() - start_upload
                         print(f"{Fore.GREEN}   ✅ Subida finalizada en {upl_time:.1f}s.{Style.RESET_ALL}")

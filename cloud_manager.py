@@ -2,6 +2,9 @@
 import os
 import subprocess
 import shutil
+import re
+import time
+import signal
 from pathlib import Path
 from typing import List, Dict, Optional, Union
 
@@ -64,6 +67,25 @@ class CloudManager:
             # Comportamiento original (Raíz)
             return f"{self.remote}:/{subpath}"
 
+    def _parse_speed(self, line: str) -> float:
+        """
+        Extrae la velocidad en MB/s de una línea de log de rclone.
+        Ejemplo: "Transferred: 200 MiB / 2.991 GiB, 7%, 18.182 MiB/s, ETA 2m37s"
+        """
+        # Regex para capturar valor y unidad (ej: 18.182 MiB)
+        match = re.search(r'(\d+\.?\d*)\s+([kKMGT]?i?B)/s', line)
+        if not match:
+            return 0.0
+        
+        value = float(match.group(1))
+        unit = match.group(2).upper()
+        
+        # Normalizar a MB/s (Megabytes por segundo, base 10 aprox para simplificar comparacion)
+        if 'K' in unit: return value / 1024
+        if 'M' in unit: return value
+        if 'G' in unit: return value * 1024
+        return 0.0
+
     def _run_rclone(self, args: List[str], timeout: int = 3600, show_progress: bool = False) -> bool:
         """
         Ejecuta un comando rclone genérico.
@@ -101,6 +123,110 @@ class CloudManager:
         except Exception as e:
             logger.error(f"❌ Excepción Rclone: {e}")
             return False
+
+    def _smart_upload(self, local_path: str, remote_full_path: str) -> bool:
+        """
+        Lógica de subida inteligente para evitar routing subóptimo (BGP).
+        Evalúa velocidad a los 10s, 20s y 30s. Si es baja, reinicia la conexión.
+        """
+        # COMANDO OPTIMIZADO (Solicitud Usuario)
+        base_cmd = [
+            self.rclone_exe, "copy", local_path, remote_full_path,
+            "--transfers", "1",
+            "--checkers", "1",
+            "--onedrive-chunk-size", "200M",
+            "--buffer-size", "200M",
+            "--progress",
+            "--stats", "1s", # Actualizar stats cada segundo para monitoreo real
+            "-v" # Verbose para ver detalles si falla
+        ]
+
+        max_retries = 3
+        
+        for attempt in range(1, max_retries + 1):
+            if attempt > 1:
+                logger.info(f"🔄 Reintentando subida (Intento {attempt}/{max_retries}) por baja velocidad...")
+            
+            # Usamos Popen para leer stdout en tiempo real
+            process = subprocess.Popen(
+                base_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, # Rclone manda stats a stderr a veces, combinamos
+                text=True,
+                encoding='utf-8',
+                bufsize=1
+            )
+
+            start_time = time.time()
+            killed = False
+            
+            try:
+                while True:
+                    # Leer línea por línea
+                    line = process.stdout.readline()
+                    if not line and process.poll() is not None:
+                        break
+                    
+                    if line:
+                        # Imprimir para que el usuario vea la barra (limpiando retorno de carro si es necesario)
+                        print(line.strip()) 
+                        
+                        # ANÁLISIS DE VELOCIDAD EN TIEMPO REAL
+                        elapsed = time.time() - start_time
+                        
+                        # Solo analizamos si estamos en los hitos de tiempo críticos
+                        if "KiB/s" in line or "MiB/s" in line or "GiB/s" in line:
+                            speed = self._parse_speed(line)
+                            
+                            # Si es el último intento, no cortamos, aceptamos lo que sea
+                            if attempt < max_retries:
+                                # Hito 1: 10-12 segundos (Umbral 8 MB/s)
+                                if 10 <= elapsed <= 12 and speed < 8.0:
+                                    logger.warning(f"⚠️ Velocidad baja ({speed:.2f} MB/s) a los 10s. Reiniciando routing...")
+                                    process.terminate()
+                                    killed = True
+                                    break
+                                
+                                # Hito 2: 20-22 segundos (Umbral 8 MB/s)
+                                if 20 <= elapsed <= 22 and speed < 8.0:
+                                    logger.warning(f"⚠️ Velocidad baja ({speed:.2f} MB/s) a los 20s. Reiniciando routing...")
+                                    process.terminate()
+                                    killed = True
+                                    break
+
+                                # Hito 3: 30-32 segundos (Umbral 15 MB/s - Objetivo)
+                                if 30 <= elapsed <= 32 and speed < 15.0:
+                                    logger.warning(f"⚠️ Velocidad insuficiente ({speed:.2f} MB/s) a los 30s. Buscando mejor ruta...")
+                                    process.terminate()
+                                    killed = True
+                                    break
+
+            except Exception as e:
+                logger.error(f"Error monitoreando proceso: {e}")
+                process.terminate()
+                killed = True
+
+            # Esperar a que cierre
+            if killed:
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill() # Forzar cierre si no responde
+                
+                time.sleep(2) # Esperar un poco antes de reintentar para que el socket se libere
+                continue # Vamos al siguiente intento del for
+            else:
+                # Si salimos del while sin killed, el proceso terminó (éxito o error natural)
+                if process.returncode == 0:
+                    return True
+                else:
+                    logger.error("❌ Rclone terminó con error (no relacionado a velocidad).")
+                    # Si falló por otra cosa (auth, red), reintentamos también
+                    time.sleep(2)
+                    continue
+
+        logger.error("❌ Se agotaron los intentos de subida inteligente.")
+        return False
 
     # --- OPERACIONES LOCALES ---
 
@@ -144,20 +270,38 @@ class CloudManager:
 
     def check_connection(self) -> bool:
         """Verifica si rclone puede ver el remoto."""
+        # Probamos listar la raíz del remote, independiente de la carpeta base
         return self._run_rclone(["lsd", f"{self.remote}:/"], timeout=10)
 
     def upload_file(self, local_path: Path, remote_path: str) -> bool:
-        """Sube un archivo específico con barra de progreso."""
+        """
+        Sube un archivo específico con barra de progreso.
+        MEJORA: Si el archivo es grande (>500MB), usa lógica Smart Upload.
+        """
+        local_path = Path(local_path)
         # MEJORA: Usar constructor de ruta inteligente
         full_dest = self._build_remote_path(remote_path)
         
-        return self._run_rclone([
-            "copy", 
-            str(local_path), 
-            full_dest,
-            "--progress",       # Barra de progreso visual
-            "--stats-one-line"  # Formato limpio
-        ], show_progress=True)
+        # Verificar tamaño para decidir estrategia
+        try:
+            size_mb = local_path.stat().st_size / (1024 * 1024)
+        except:
+            size_mb = 0
+
+        # UMBRAL: 500 MB para activar Smart Upload
+        if size_mb > 500:
+            logger.info(f"⚡ Archivo grande ({size_mb:.2f} MB). Usando Smart Upload (Routing Fix)...")
+            # Pasamos rutas como string para el comando Popen
+            return self._smart_upload(str(local_path), full_dest)
+        else:
+            # Subida normal para archivos pequeños
+            return self._run_rclone([
+                "copy", 
+                str(local_path), 
+                full_dest,
+                "--progress",       # Barra de progreso visual
+                "--stats-one-line"  # Formato limpio
+            ], show_progress=True)
 
     def download_file(self, remote_path: str, local_dest: Path, silent: bool = False) -> bool:
         """
