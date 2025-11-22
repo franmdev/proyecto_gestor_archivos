@@ -46,26 +46,28 @@ class SecurityManager:
         return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
     def _find_7z_executable(self) -> str:
-        """Localiza el ejecutable de 7-Zip en el sistema o configuración."""
-        # 1. Verificar ruta configurada en config.py/.env
-        if os.path.exists(SEVEN_ZIP_PATH) and os.path.isfile(SEVEN_ZIP_PATH):
-            return SEVEN_ZIP_PATH
-        
-        # 2. Verificar si está en el PATH del sistema
+        """Localiza el ejecutable de 7-Zip (7za.exe o 7z.exe)."""
+        # 1. Obtener ruta del .env
+        env_path = Path(SEVEN_ZIP_PATH) if SEVEN_ZIP_PATH else None
+
+        # Si existe y es un directorio, buscamos el exe dentro
+        if env_path and env_path.is_dir():
+            # Prioridad: 7za.exe (portable standalone) > 7z.exe (full)
+            for exe in ["7za.exe", "7z.exe"]:
+                candidate = env_path / exe
+                if candidate.exists():
+                    return str(candidate)
+
+        # Si el usuario puso la ruta completa al archivo en el .env
+        if env_path and env_path.is_file() and env_path.exists():
+            return str(env_path)
+
+        # 2. Fallback: Intentar PATH del sistema
         path_in_env = shutil.which("7z") or shutil.which("7za")
         if path_in_env:
             return path_in_env
             
-        # 3. Fallbacks comunes en Windows
-        common_paths = [
-            r"C:\Program Files\7-Zip\7z.exe",
-            r"C:\Program Files (x86)\7-Zip\7z.exe",
-        ]
-        for path in common_paths:
-            if os.path.exists(path):
-                return path
-        
-        error_msg = f"❌ No se encuentra 7-Zip. Configura SEVEN_ZIP_PATH en .env o instálalo."
+        error_msg = f"❌ No se encuentra 7-Zip en {env_path}. Verifica tu .env"
         logger.critical(error_msg)
         raise FileNotFoundError(error_msg)
 
