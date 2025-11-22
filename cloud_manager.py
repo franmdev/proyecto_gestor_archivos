@@ -45,25 +45,37 @@ class CloudManager:
         # Fallback ciego
         return "rclone"
 
-    def _run_rclone(self, args: List[str], timeout: int = 3600) -> bool:
-        """Ejecuta un comando rclone genérico."""
+    def _run_rclone(self, args: List[str], timeout: int = 3600, show_progress: bool = False) -> bool:
+        """
+        Ejecuta un comando rclone genérico.
+        MEJORA: 'show_progress=True' permite que rclone muestre su barra nativa en consola.
+        """
         cmd = [self.rclone_exe] + args
         try:
-            logger.debug(f"Ejecutando Rclone: {' '.join(cmd)}")
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                encoding='utf-8',
-                timeout=timeout
-            )
-            
-            if result.returncode != 0:
-                # Filtramos errores que no son críticos (ej: avisos de 'directory not found' al listar)
-                if "directory not found" not in result.stderr.lower():
-                    logger.error(f"❌ Error Rclone: {result.stderr.strip()}")
-                return False
-            return True
+            if show_progress:
+                # NUEVO: Si queremos ver progreso, NO capturamos el output, dejamos que salga a consola
+                # Usamos run normal heredando stdout/stderr
+                logger.debug(f"Ejecutando Rclone (Visible): {' '.join(cmd)}")
+                result = subprocess.run(cmd, timeout=timeout)
+                return result.returncode == 0
+            else:
+                # Comportamiento original (Silencioso / Capturado)
+                logger.debug(f"Ejecutando Rclone (Oculto): {' '.join(cmd)}")
+                result = subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    encoding='utf-8',
+                    timeout=timeout
+                )
+                
+                if result.returncode != 0:
+                    # Filtramos errores que no son críticos (ej: avisos de 'directory not found' al listar)
+                    if "directory not found" not in result.stderr.lower():
+                        logger.error(f"❌ Error Rclone: {result.stderr.strip()}")
+                    return False
+                return True
+
         except subprocess.TimeoutExpired:
             logger.error("❌ Rclone excedió el tiempo límite.")
             return False
@@ -116,24 +128,30 @@ class CloudManager:
         return self._run_rclone(["lsd", f"{self.remote}:/"], timeout=10)
 
     def upload_file(self, local_path: Path, remote_path: str) -> bool:
-        """Sube un archivo específico."""
+        """Sube un archivo específico con barra de progreso."""
         return self._run_rclone([
             "copy", 
             str(local_path), 
             f"{self.remote}:/{remote_path}",
-            "--progress"
-        ])
+            "--progress",       # Barra de progreso visual
+            "--stats-one-line"  # Formato limpio
+        ], show_progress=True)
 
-    def download_file(self, remote_path: str, local_dest: Path) -> bool:
-        """Descarga un archivo específico."""
+    def download_file(self, remote_path: str, local_dest: Path, silent: bool = False) -> bool:
+        """
+        Descarga un archivo específico.
+        MEJORA: Parametro 'silent' para controlar si mostramos barra o no (útil para índices).
+        """
         # Asegurar directorio destino
         local_dest.parent.mkdir(parents=True, exist_ok=True)
+        
         return self._run_rclone([
             "copyto", # copyto permite renombrar/definir destino exacto
             f"{self.remote}:/{remote_path}",
             str(local_dest),
-            "--progress"
-        ])
+            "--progress",
+            "--stats-one-line"
+        ], show_progress=not silent)
 
     def sync_up(self, local_dir: Path, remote_dir: str) -> bool:
         """Sincroniza una carpeta local hacia la nube (Unidireccional)."""
@@ -143,4 +161,4 @@ class CloudManager:
             f"{self.remote}:/{remote_dir}",
             "--progress",
             "--create-empty-src-dirs"
-        ])
+        ], show_progress=True)
