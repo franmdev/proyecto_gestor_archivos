@@ -1,6 +1,7 @@
 # inventory_manager.py
 import pandas as pd
 import shutil
+import time  # Nuevo import para manejo de esperas en restauración
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -24,7 +25,8 @@ class InventoryManager:
         """Carga el CSV local o crea uno vacío si no existe."""
         if self.csv_path.exists():
             try:
-                df = pd.read_csv(self.csv_path)
+                # MEJORA: encoding='utf-8-sig' para que Excel reconozca Ñ y tildes
+                df = pd.read_csv(self.csv_path, encoding='utf-8-sig')
                 # Validar columnas mínimas
                 missing = [col for col in CSV_COLUMNS if col not in df.columns]
                 if missing:
@@ -42,13 +44,27 @@ class InventoryManager:
 
     # --- GESTIÓN DE REGISTROS ---
 
+    def check_exists(self, prefijo: str, nombre_original: str) -> bool:
+        """
+        MEJORA: Verifica si ya existe un archivo con el mismo nombre original dentro del mismo prefijo.
+        Evita duplicados en la subida.
+        """
+        if self.df.empty:
+            return False
+        
+        # Filtramos por prefijo y nombre original exacto
+        exists = not self.df[
+            (self.df['prefijo'] == prefijo) & 
+            (self.df['nombre_original'] == nombre_original)
+        ].empty
+        return exists
+
     def add_record(self, record: Dict):
         """Añade un registro al DataFrame en memoria (no guarda a disco aún)."""
         new_row = pd.DataFrame([record])
         
         # CORRECCIÓN PANDAS WARNING:
-        # Eliminamos columnas totalmente vacías/NA antes de concatenar para evitar
-        # warnings futuros de incompatibilidad de tipos.
+        # Eliminamos columnas totalmente vacías/NA antes de concatenar
         new_row = new_row.dropna(how='all', axis=1)
         
         if self.df.empty:
@@ -79,6 +95,19 @@ class InventoryManager:
 
         return next_global, next_prefix
 
+    # --- CONSULTAS PARA NUEVO FLUJO DE DESCARGA ---
+
+    def get_prefixes_summary(self) -> pd.DataFrame:
+        """Retorna un DataFrame con el conteo de archivos por prefijo."""
+        if self.df.empty:
+            return pd.DataFrame(columns=['prefijo', 'count'])
+        # Cuenta cuántos archivos hay por cada prefijo
+        return self.df['prefijo'].value_counts().reset_index()
+
+    def get_files_by_prefix(self, prefix: str) -> pd.DataFrame:
+        """Retorna todos los archivos de un prefijo específico."""
+        return self.df[self.df['prefijo'] == prefix]
+
     def find_file(self, criteria: str, value: str) -> pd.DataFrame:
         """
         Busca archivos. 
@@ -106,7 +135,8 @@ class InventoryManager:
 
     def save_local(self):
         """Guarda el DataFrame a CSV plano localmente."""
-        self.df.to_csv(self.csv_path, index=False)
+        # MEJORA: utf-8-sig para Excel
+        self.df.to_csv(self.csv_path, index=False, encoding='utf-8-sig')
         logger.info(f"💾 Índice guardado localmente: {len(self.df)} registros.")
 
     def save_encrypted_backup(self, security_manager, prefix="AUTO"):
@@ -161,10 +191,21 @@ class InventoryManager:
             restored_csv = temp_extract / "index_main.csv"
             if restored_csv.exists():
                 # Reemplazar actual
-                shutil.move(str(restored_csv), str(self.csv_path))
+                # MEJORA: Intentar mover con reintentos para evitar WinError 5 si el archivo está ocupado
+                time.sleep(0.5) 
+                try:
+                    shutil.move(str(restored_csv), str(self.csv_path))
+                except PermissionError:
+                    # Si falla mover (ej: archivo abierto), intentar copiar
+                    shutil.copy2(str(restored_csv), str(self.csv_path))
+                
                 self.df = self._load_or_create_db() # Recargar en memoria
                 logger.info("✅ Índice restaurado desde backup encriptado.")
-                shutil.rmtree(temp_extract)
+                
+                try:
+                    shutil.rmtree(temp_extract, ignore_errors=True)
+                except:
+                    pass
                 return True
         
         return False
