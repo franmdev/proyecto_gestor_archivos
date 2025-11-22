@@ -2,6 +2,7 @@
 import sys
 import getpass
 import time
+import os  # Necesario para unlink en safe_delete
 from pathlib import Path
 from colorama import init, Fore, Style
 from tabulate import tabulate
@@ -37,12 +38,34 @@ class AppOrchestrator:
     def print_info(self, text):
         print(f"{Fore.YELLOW}ℹ️  {text}{Style.RESET_ALL}")
 
+    # --- UTILIDADES INTERNAS ---
+
+    def safe_delete(self, path: Path):
+        """
+        MEJORA: Intenta borrar un archivo con reintentos y espera.
+        Soluciona el [WinError 5] Access is denied.
+        """
+        if not path.exists(): return
+        
+        for i in range(3): # 3 intentos
+            try:
+                time.sleep(0.5) # Esperar a que el sistema libere el archivo
+                path.unlink()
+                return
+            except PermissionError:
+                if i == 2: # En el último intento, solo avisar
+                    self.print_info(f"No se pudo borrar temporal inmediatamente: {path.name} (bloqueado)")
+                continue
+            except Exception as e:
+                self.print_error(f"Error borrando {path.name}: {e}")
+                return
+
     # --- INICIALIZACIÓN ---
 
     def start(self):
         """Arranque de la aplicación."""
         init_directories()
-        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.1")
+        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.2")
 
         # 1. Autenticación DOBLE
         try:
@@ -76,8 +99,8 @@ class AppOrchestrator:
 
     def show_menu(self):
         print(f"\n{Fore.BLUE}--- MENÚ PRINCIPAL ---{Style.RESET_ALL}")
-        print("1. 📤 MODO SUBIDA (Encriptar + Subir)")
-        print("2. 📥 MODO DESCARGA (Bajar + Desencriptar)")
+        print("1. 📤 MODO SUBIDA (Detecta Duplicados)")
+        print("2. 📥 MODO DESCARGA (Explorador Prefijos)")
         print("3. 🔍 CONSULTAR ÍNDICE")
         print("4. 🔧 MANTENIMIENTO Y ESTADO")
         print("0. 🚪 SALIR")
@@ -115,6 +138,7 @@ class AppOrchestrator:
         if confirm.lower() != 's': return
 
         processed_count = 0
+        skipped_count = 0
 
         # 3. Procesamiento (Bucle Principal)
         for carpeta in carpetas_validas:
@@ -122,6 +146,12 @@ class AppOrchestrator:
                 prefijo = carpeta.name.split('_')[0] if '_' in carpeta.name else carpeta.name[:3].upper()
                 if prefijo not in self.inventory.df['prefijo'].unique():
                      pass
+
+                # MEJORA: VALIDACIÓN DE DUPLICADOS
+                if self.inventory.check_exists(prefijo, carpeta.name):
+                    print(f"{Fore.YELLOW}⚠️  Saltando duplicado: {prefijo}/{carpeta.name} ya existe en el índice.{Style.RESET_ALL}")
+                    skipped_count += 1
+                    continue
 
                 self.print_info(f"Procesando: {carpeta.name}...")
 
@@ -138,12 +168,15 @@ class AppOrchestrator:
                 md5_hash = self.security.calculate_md5(carpeta)
                 size_mb = self.security.get_size_mb(carpeta)
 
+                # MEJORA: Fecha formato dd-mm-yyyy hh:mm:ss
+                fecha_fmt = time.strftime("%d-%m-%Y %H:%M:%S")
+
                 # B. Preparar Metadatos para inyectar en el 7z
                 metadata_json = {
                     "original_name_token": nombre_orig_encrypted,
                     "hash_filename": hash_nombre,
                     "md5": md5_hash,
-                    "processed_date": time.strftime("%Y-%m-%d %H:%M:%S")
+                    "processed_date": fecha_fmt
                 }
 
                 # C. Comprimir y Encriptar (Security Manager - Usa Password Maestra)
@@ -163,7 +196,7 @@ class AppOrchestrator:
                         'carpeta_hija': f"{hash_nombre}.7z",
                         'tamaño_mb': size_mb,
                         'hash_md5': md5_hash,
-                        'fecha_procesado': time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        'fecha_procesado': fecha_fmt,
                         'notas': "Subida Automática"
                     }
                     self.inventory.add_record(record)
@@ -173,12 +206,9 @@ class AppOrchestrator:
                     if self.cloud.upload_file(dest_7z, cloud_path):
                         self.print_success(f"Subido: {carpeta.name} -> {cloud_path}")
                         
-                        # F. LIMPIEZA AUTOMÁTICA (Borrar .7z local tras subida)
-                        try:
-                            dest_7z.unlink()
-                            self.print_info("🧹 Archivo comprimido local eliminado para ahorrar espacio.")
-                        except Exception as e:
-                            self.print_error(f"No se pudo borrar archivo temporal: {e}")
+                        # F. LIMPIEZA AUTOMÁTICA MEJORADA (Usa safe_delete)
+                        self.safe_delete(dest_7z)
+                        self.print_info("🧹 Archivo comprimido local eliminado.")
                             
                         processed_count += 1
                     else:
@@ -186,6 +216,9 @@ class AppOrchestrator:
                 
             except Exception as e:
                 self.print_error(f"Error procesando {carpeta.name}: {e}")
+
+        # Resumen
+        print(f"\n🏁 Resumen: {processed_count} procesados, {skipped_count} duplicados omitidos.")
 
         # 4. Finalización: Guardar y Subir Índice (Usando Password CSV)
         if processed_count > 0:
@@ -198,53 +231,78 @@ class AppOrchestrator:
                 else:
                     self.print_error("No se pudo subir el índice a la nube.")
             
-        print(f"\n✅ Proceso finalizado. {processed_count} carpetas procesadas.")
+        print(f"\n✅ Proceso finalizado.")
 
     def run_download_mode(self):
-        self.print_header("MODO DESCARGA")
+        """
+        MEJORA: Nuevo flujo jerárquico de descarga.
+        1. Sincronizar índice.
+        2. Mostrar Prefijos.
+        3. Mostrar Archivos.
+        4. Seleccionar IDs (ej: 3,4,5).
+        """
+        self.print_header("MODO DESCARGA EXPLORADOR")
         
         # 1. Intentar sincronizar índice primero
-        self.print_info("Intentando descargar índice más reciente...")
+        self.print_info("Sincronizando índice...")
         local_idx_enc = Path("data/temp/index_main_download.7z")
         if self.cloud.download_file("index_main.7z", local_idx_enc):
-            # Desencriptar índice con Clave CSV (InventoryManager sabe cuál es)
+            # Desencriptar índice con Clave CSV
             if self.inventory.load_from_encrypted(self.security, local_idx_enc):
                 self.print_success("Índice actualizado.")
-            local_idx_enc.unlink(missing_ok=True)
+            self.safe_delete(local_idx_enc) # MEJORA: Borrado seguro
         else:
             self.print_info("No se pudo descargar índice remoto. Usando local.")
 
-        # 2. Buscar archivo
-        criterio = input("Buscar por (1) Nombre Original (2) Prefijo: ")
-        termino = input("Término de búsqueda: ")
-        
-        columna = 'nombre_original' if criterio == '1' else 'prefijo'
-        resultados = self.inventory.find_file(columna, termino)
-        
-        if resultados.empty:
-            return self.print_error("No se encontraron resultados.")
+        # 2. Mostrar Prefijos Disponibles
+        summary = self.inventory.get_prefixes_summary()
+        if summary.empty: return self.print_error("Índice vacío.")
 
-        # Mostrar tabla
-        print(tabulate(resultados[['id_global', 'prefijo', 'nombre_original', 'tamaño_mb']], headers='keys', tablefmt='simple'))
-        
-        ids = input("\nIngrese ID_GLOBAL a descargar (o 'todas' para descargar la lista): ")
-        
-        # 3. Descargar
-        if ids == 'todas':
-            files_to_download = resultados
+        print(f"\n{Fore.CYAN}📂 PREFIJOS DISPONIBLES:{Style.RESET_ALL}")
+        # Ajuste visual de columnas para tabulate
+        summary.columns = ['Prefijo', 'Cant. Archivos']
+        print(tabulate(summary, headers='keys', tablefmt='simple', showindex=False))
+
+        # 3. Seleccionar Prefijo
+        sel_prefix = input("\n👉 Escriba el Prefijo a explorar (o 'SALIR'): ").upper().strip()
+        if sel_prefix == 'SALIR' or not sel_prefix: return
+
+        # 4. Mostrar Archivos del Prefijo
+        files_df = self.inventory.get_files_by_prefix(sel_prefix)
+        if files_df.empty: return self.print_error("Prefijo no existe o está vacío.")
+
+        print(f"\n{Fore.CYAN}📄 ARCHIVOS EN '{sel_prefix}':{Style.RESET_ALL}")
+        # Mostramos ID, Nombre y Nombre 7z como pediste
+        view_df = files_df[['id_global', 'nombre_original', 'nombre_encriptado', 'tamaño_mb']]
+        print(tabulate(view_df, headers=['ID', 'Nombre Real', 'Nombre 7z', 'MB'], tablefmt='simple', showindex=False))
+
+        # 5. Selección de Archivos (Múltiple 3,4,5)
+        selection = input("\n👉 Ingrese IDs a descargar (ej: 3,4,5) o 'TODO': ").strip()
+        if not selection: return
+
+        to_download = pd.DataFrame()
+        if selection.upper() == 'TODO':
+            to_download = files_df
         else:
-            files_to_download = resultados[resultados['id_global'].astype(str) == ids.strip()]
-        
-        if files_to_download.empty: 
-            self.print_error("No se encontraron archivos con ese ID.")
-            return
+            # Parsear lista de IDs
+            try:
+                ids = [int(x.strip()) for x in selection.split(',')]
+                # Filtrar DataFrame por los IDs seleccionados
+                to_download = files_df[files_df['id_global'].isin(ids)]
+            except ValueError:
+                return self.print_error("Formato inválido. Use números separados por coma (ej: 1,3,5).")
 
-        for _, row in files_to_download.iterrows():
+        if to_download.empty: return self.print_error("Ningún archivo seleccionado o IDs no encontrados.")
+
+        # 6. Ejecutar Descarga
+        self.print_info(f"Iniciando descarga de {len(to_download)} archivos...")
+
+        for _, row in to_download.iterrows():
             remote_path = f"{row['ruta_relativa']}{row['nombre_encriptado']}.7z"
             local_7z = Path(f"data/descargas/{row['nombre_encriptado']}.7z")
             local_dest_folder = Path(f"data/desencriptados/{row['nombre_original']}")
 
-            self.print_info(f"Bajando {row['nombre_original']}...")
+            self.print_info(f"⬇️ Bajando: {row['nombre_original']}...")
             
             if self.cloud.download_file(remote_path, local_7z):
                 self.print_info("Desencriptando y descomprimiendo...")
@@ -253,8 +311,8 @@ class AppOrchestrator:
                 if self.security.decrypt_extract_7z(local_7z, local_dest_folder):
                     self.print_success(f"Archivo listo en: {local_dest_folder}")
                     
-                    # Limpieza automática del .7z descargado
-                    local_7z.unlink()
+                    # Limpieza automática del .7z descargado (Segura)
+                    self.safe_delete(local_7z)
                 else:
                     self.print_error("Fallo en descompresión (contraseña incorrecta?).")
             else:
