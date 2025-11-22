@@ -12,10 +12,12 @@ class InventoryManager:
     """
     FACHADA DE DATOS
     Responsabilidad: Gestionar el índice (CSV/Pandas), búsquedas y persistencia.
+    Maneja su propia contraseña para proteger el archivo de índice.
     """
 
-    def __init__(self):
+    def __init__(self, csv_password: str):
         self.csv_path = INDEX_DIR / "index_main.csv"
+        self.csv_password = csv_password  # Clave específica para el CSV
         self.df = self._load_or_create_db()
 
     def _load_or_create_db(self) -> pd.DataFrame:
@@ -43,7 +45,16 @@ class InventoryManager:
     def add_record(self, record: Dict):
         """Añade un registro al DataFrame en memoria (no guarda a disco aún)."""
         new_row = pd.DataFrame([record])
-        self.df = pd.concat([self.df, new_row], ignore_index=True)
+        
+        # CORRECCIÓN PANDAS WARNING:
+        # Eliminamos columnas totalmente vacías/NA antes de concatenar para evitar
+        # warnings futuros de incompatibilidad de tipos.
+        new_row = new_row.dropna(how='all', axis=1)
+        
+        if self.df.empty:
+            self.df = new_row
+        else:
+            self.df = pd.concat([self.df, new_row], ignore_index=True)
 
     def get_next_ids(self, prefix: str) -> tuple[int, int]:
         """
@@ -73,7 +84,7 @@ class InventoryManager:
         Busca archivos. 
         criteria: 'prefijo', 'nombre_original', 'nombre_encriptado'
         """
-        if criteria not in self.df.columns:
+        if criteria not in self.df.columns or self.df.empty:
             return pd.DataFrame()
         
         # Búsqueda exacta para prefijo o encriptado, parcial para nombre original
@@ -91,7 +102,7 @@ class InventoryManager:
         count = len(self.df)
         return f"Total Archivos: {count} | Tamaño Total: {total_size:.2f} MB"
 
-    # --- PERSISTENCIA Y SEGURIDAD ---
+    # --- PERSISTENCIA Y SEGURIDAD (CON CLAVE CSV) ---
 
     def save_local(self):
         """Guarda el DataFrame a CSV plano localmente."""
@@ -101,7 +112,7 @@ class InventoryManager:
     def save_encrypted_backup(self, security_manager, prefix="AUTO"):
         """
         Crea un backup encriptado del CSV usando SecurityManager.
-        Guarda en data/backups y sobreescribe data/index/index_main.7z (para subir).
+        IMPORTANTE: Usa self.csv_password para encriptar este archivo.
         """
         # 1. Asegurar que está guardado en plano primero
         self.save_local()
@@ -120,17 +131,18 @@ class InventoryManager:
             "type": "CSV_INDEX_BACKUP"
         }
 
-        # 4. Comprimir y Encriptar (Usando SecurityManager)
+        # 4. Comprimir y Encriptar (Usando SecurityManager + Password CSV)
         success = security_manager.compress_encrypt_7z(
             source_path=self.csv_path,
             dest_path=backup_path,
-            metadata=metadata
+            metadata=metadata,
+            password=self.csv_password # <--- Usa la clave CSV aquí
         )
 
         if success:
             # 5. Copiar el backup recién creado a index_main.7z (el archivo oficial para la nube)
             shutil.copy2(backup_path, main_encrypted_path)
-            logger.info(f"🔐 Backup encriptado creado: {backup_name}")
+            logger.info(f"🔐 Backup encriptado (Clave CSV) creado: {backup_name}")
             return main_encrypted_path
         else:
             logger.error("❌ Fallo al encriptar el índice CSV.")
@@ -139,12 +151,13 @@ class InventoryManager:
     def load_from_encrypted(self, security_manager, archive_path: Path) -> bool:
         """
         Restaura el CSV desde un .7z encriptado.
-        Útil para sincronización inicial o recuperación.
+        Usa la clave CSV para desencriptar.
         """
         temp_extract = Path("data/temp/csv_restore")
         temp_extract.mkdir(parents=True, exist_ok=True)
 
-        if security_manager.decrypt_extract_7z(archive_path, temp_extract):
+        # Usamos clave CSV para desencriptar
+        if security_manager.decrypt_extract_7z(archive_path, temp_extract, password=self.csv_password):
             restored_csv = temp_extract / "index_main.csv"
             if restored_csv.exists():
                 # Reemplazar actual
