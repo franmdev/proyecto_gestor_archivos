@@ -68,7 +68,7 @@ class AppOrchestrator:
     def start(self):
         """Arranque de la aplicación."""
         init_directories()
-        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.2")
+        self.print_header("GESTOR DE ARCHIVOS ENCRIPTADOS v2.3")
 
         # 1. Autenticación DOBLE
         try:
@@ -123,58 +123,53 @@ class AppOrchestrator:
     # --- MODOS DE OPERACIÓN ---
 
     def run_upload_mode(self):
+        """
+        MODO SUBIDA MEJORADO (Visualización profesional)
+        """
         self.print_header("MODO SUBIDA")
         
-        # 1. Pedir carpeta origen
-        path_str = input("📁 Arrastre la carpeta PADRE a procesar: ").strip().replace('"', '')
+        path_str = input("📁 Carpeta PADRE a procesar: ").strip().replace('"', '')
         source_path = Path(path_str)
-        
-        if not source_path.exists():
-            return self.print_error("La ruta no existe.")
+        if not source_path.exists(): return self.print_error("La ruta no existe.")
 
-        # 2. Cloud Manager escanea carpetas válidas (DOC, FIN, etc)
         carpetas_validas = self.cloud.scan_local_folders(source_path)
-        if not carpetas_validas:
-            return self.print_error("No se encontraron subcarpetas con prefijos válidos.")
+        if not carpetas_validas: return self.print_error("No se encontraron subcarpetas válidas.")
 
         confirm = input(f"¿Procesar {len(carpetas_validas)} carpetas? (s/n): ")
         if confirm.lower() != 's': return
 
         processed_count = 0
         skipped_count = 0
+        total_files = len(carpetas_validas)
 
-        # 3. Procesamiento (Bucle Principal)
-        for carpeta in carpetas_validas:
+        print(f"\n{Fore.CYAN}🚀 Iniciando lote de {total_files} carpetas...{Style.RESET_ALL}")
+
+        for idx, carpeta in enumerate(carpetas_validas, 1):
             try:
                 prefijo = carpeta.name.split('_')[0] if '_' in carpeta.name else carpeta.name[:3].upper()
                 if prefijo not in self.inventory.df['prefijo'].unique():
                      pass
 
-                # MEJORA: VALIDACIÓN DE DUPLICADOS
+                # VALIDACIÓN DE DUPLICADOS
                 if self.inventory.check_exists(prefijo, carpeta.name):
-                    print(f"{Fore.YELLOW}⚠️  Saltando duplicado: {prefijo}/{carpeta.name} ya existe en el índice.{Style.RESET_ALL}")
+                    print(f"{Fore.YELLOW}⚠️  [{idx}/{total_files}] Saltando duplicado: {carpeta.name}{Style.RESET_ALL}")
                     skipped_count += 1
                     continue
 
-                self.print_info(f"Procesando: {carpeta.name}...")
-
-                # A. Generar IDs y Nombres Seguros
-                next_global, next_prefix = self.inventory.get_next_ids(prefijo)
-                
-                # Generamos hash determinista para el nombre del archivo .7z
-                hash_nombre = self.security.generate_filename_hash(carpeta.name)
-                
-                # Encriptamos el nombre original para guardarlo en metadatos
-                nombre_orig_encrypted = self.security.encrypt_text(carpeta.name)
-                
-                # Calculamos MD5 y Tamaño antes de comprimir
-                md5_hash = self.security.calculate_md5(carpeta)
+                # Preparación de datos
                 size_mb = self.security.get_size_mb(carpeta)
+                
+                # FEEDBACK VISUAL MEJORADO
+                print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
+                print(f"{Fore.YELLOW}📤 Procesando: {carpeta.name} (Size: {size_mb} MB) - ({idx} de {total_files}){Style.RESET_ALL}")
 
-                # MEJORA: Fecha formato dd-mm-yyyy hh:mm:ss
+                # A. Generación de metadatos
+                next_global, next_prefix = self.inventory.get_next_ids(prefijo)
+                hash_nombre = self.security.generate_filename_hash(carpeta.name)
+                nombre_orig_encrypted = self.security.encrypt_text(carpeta.name)
+                md5_hash = self.security.calculate_md5(carpeta)
                 fecha_fmt = time.strftime("%d-%m-%Y %H:%M:%S")
 
-                # B. Preparar Metadatos para inyectar en el 7z
                 metadata_json = {
                     "original_name_token": nombre_orig_encrypted,
                     "hash_filename": hash_nombre,
@@ -182,37 +177,38 @@ class AppOrchestrator:
                     "processed_date": fecha_fmt
                 }
 
-                # C. Comprimir y Encriptar (Security Manager - Usa Password Maestra)
+                # B. Compresión (con timer)
+                print(f"{Fore.CYAN}📦 Comprimiendo y Encriptando...{Style.RESET_ALL}")
+                start_compress = time.time()
                 dest_7z = source_path / f"{hash_nombre}.7z"
+                
                 success = self.security.compress_encrypt_7z(carpeta, dest_7z, metadata=metadata_json)
-
+                
                 if success:
-                    # D. Registrar en Inventario (Inventory Manager)
+                    comp_time = time.time() - start_compress
+                    print(f"{Fore.GREEN}   ✅ Listo ({comp_time:.1f}s).{Style.RESET_ALL}")
+
+                    # C. Registro en Inventario
                     record = {
-                        'id_global': next_global,
-                        'id_prefix': next_prefix,
-                        'prefijo': prefijo,
-                        'nombre_original': carpeta.name,
-                        'nombre_original_encrypted': nombre_orig_encrypted,
-                        'nombre_encriptado': hash_nombre,
-                        'ruta_relativa': f"{prefijo}/",
-                        'carpeta_hija': f"{hash_nombre}.7z",
-                        'tamaño_mb': size_mb,
-                        'hash_md5': md5_hash,
-                        'fecha_procesado': fecha_fmt,
-                        'notas': "Subida Automática"
+                        'id_global': next_global, 'id_prefix': next_prefix, 'prefijo': prefijo,
+                        'nombre_original': carpeta.name, 'nombre_original_encrypted': nombre_orig_encrypted,
+                        'nombre_encriptado': hash_nombre, 'ruta_relativa': f"{prefijo}/",
+                        'carpeta_hija': f"{hash_nombre}.7z", 'tamaño_mb': size_mb,
+                        'hash_md5': md5_hash, 'fecha_procesado': fecha_fmt, 'notas': "Auto Upload"
                     }
                     self.inventory.add_record(record)
                     
-                    # E. Subir a la Nube (Cloud Manager)
+                    # D. Subida a la Nube (con barra de progreso Rclone visible)
                     cloud_path = f"{prefijo}/{hash_nombre}.7z"
+                    start_upload = time.time()
+                    
+                    # CloudManager.upload_file ya tiene show_progress=True configurado
                     if self.cloud.upload_file(dest_7z, cloud_path):
-                        self.print_success(f"Subido: {carpeta.name} -> {cloud_path}")
+                        upl_time = time.time() - start_upload
+                        print(f"{Fore.GREEN}   ✅ Subida finalizada en {upl_time:.1f}s.{Style.RESET_ALL}")
                         
-                        # F. LIMPIEZA AUTOMÁTICA (Usa safe_delete mejorado)
+                        # E. Limpieza
                         self.safe_delete(dest_7z)
-                        self.print_info("🧹 Archivo comprimido local eliminado.")
-                            
                         processed_count += 1
                     else:
                         self.print_error(f"Fallo al subir {carpeta.name}")
@@ -220,17 +216,19 @@ class AppOrchestrator:
             except Exception as e:
                 self.print_error(f"Error procesando {carpeta.name}: {e}")
 
-        # Resumen
-        print(f"\n🏁 Resumen: {processed_count} procesados, {skipped_count} duplicados omitidos.")
+        # Resumen Final
+        print(f"\n{Fore.GREEN}✨ Lote completado.{Style.RESET_ALL}")
+        print(f"🏁 Resumen: {processed_count} subidos, {skipped_count} duplicados omitidos.")
 
-        # 4. Finalización: Guardar y Subir Índice (Usando Password CSV)
+        # 4. Actualización de Índice
         if processed_count > 0:
-            self.print_info("Guardando índice encriptado (Usando Clave CSV)...")
+            self.print_info("Sincronizando índice en la nube...")
             encrypted_index_path = self.inventory.save_encrypted_backup(self.security, prefix="UPLOAD")
             
             if encrypted_index_path:
+                # Subida silenciosa del índice (no necesitamos barra para esto tan pequeño)
                 if self.cloud.upload_file(encrypted_index_path, "index_main.7z"):
-                    self.print_success("Índice sincronizado con la nube.")
+                    self.print_success("Índice actualizado correctamente.")
                 else:
                     self.print_error("No se pudo subir el índice a la nube.")
             
