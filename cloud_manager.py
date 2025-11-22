@@ -4,6 +4,7 @@ import subprocess
 import shutil
 import re
 import time
+import sys
 import signal
 from pathlib import Path
 from typing import List, Dict, Optional, Union
@@ -168,8 +169,16 @@ class CloudManager:
                         break
                     
                     if line:
-                        # Imprimir para que el usuario vea la barra (limpiando retorno de carro si es necesario)
-                        print(line.strip()) 
+                        line = line.strip()
+                        # Filtramos solo la línea relevante ("Transferred: ...")
+                        # y usamos \r para sobrescribir la línea actual.
+                        if "Transferred:" in line and "%" in line:
+                            # Limpiamos la línea un poco y sobrescribimos
+                            sys.stdout.write(f"\r   🚀 {line}      ")
+                            sys.stdout.flush()
+                        
+                        # Ignoramos las líneas ruidosas para no ensuciar la consola
+                        # (Transferring, Elapsed time, etc se ocultan)
                         
                         # ANÁLISIS DE VELOCIDAD EN TIEMPO REAL
                         elapsed = time.time() - start_time
