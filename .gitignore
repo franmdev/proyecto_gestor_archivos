@@ -15,7 +15,7 @@ data/backups/auto/*
 data/backups/manual/*
 
 # Ignorar CSVs planos (solo subiremos los encriptados si decidimos hacerlo)
-data/index/*.csv
+data/index/*
 
 # Mantener la estructura de carpetas vacías (opcional, truco de git)
 !data/**/.gitkeep

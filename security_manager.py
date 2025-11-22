@@ -127,11 +127,16 @@ class SecurityManager:
 
     # --- MÉTODOS DE COMPRESIÓN (7-ZIP) ---
 
-    def compress_encrypt_7z(self, source_path: Path, dest_path: Path, metadata: Dict = None) -> bool:
+    def compress_encrypt_7z(self, source_path: Path, dest_path: Path, metadata: Dict = None, password: str = None) -> bool:
         """
         Comprime una carpeta/archivo a .7z usando AES-256 y Header Encryption (-mhe=on).
         Opcionalmente inyecta un archivo 'metadatos.json' dentro del 7z para recuperación.
+        
+        MODIFICACIÓN: Acepta 'password' opcional para usar una clave distinta a la maestra (ej: CSV).
         """
+        # Si no se pasa password, usa la maestra por defecto
+        pwd_to_use = password if password else self.master_password
+
         source_path = Path(source_path)
         dest_path = Path(dest_path)
         
@@ -143,7 +148,7 @@ class SecurityManager:
         try:
             cmd = [
                 self.seven_zip_exe, "a",       # Add (Comprimir)
-                f"-p{self.master_password}",   # Password
+                f"-p{pwd_to_use}",             # Password (dinámico)
                 "-mhe=on",                     # Encrypt Headers (Oculta nombres de archivo)
                 "-mx=9",                       # Compresión Máxima
                 "-y",                          # Yes to all
@@ -158,8 +163,11 @@ class SecurityManager:
                     json.dump(metadata, f, indent=2, ensure_ascii=False)
                 cmd.append(str(temp_meta_path)) # Agregar el JSON al comando 7z
 
-            # Ejecutar 7z
-            logger.debug(f"Ejecutando 7z: {' '.join(cmd).replace(self.master_password, '******')}")
+            # Ejecutar 7z (Ocultando password en logs)
+            cmd_debug = list(cmd)
+            cmd_debug[2] = "-p******"
+            logger.debug(f"Ejecutando 7z: {' '.join(cmd_debug)}")
+            
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
 
             if result.returncode != 0:
@@ -177,12 +185,18 @@ class SecurityManager:
             if temp_meta_path and temp_meta_path.exists():
                 temp_meta_path.unlink()
 
-    def decrypt_extract_7z(self, archive_path: Path, dest_folder: Path) -> bool:
-        """Desencripta y extrae un archivo .7z."""
+    def decrypt_extract_7z(self, archive_path: Path, dest_folder: Path, password: str = None) -> bool:
+        """
+        Desencripta y extrae un archivo .7z.
+        
+        MODIFICACIÓN: Acepta 'password' opcional para usar una clave distinta a la maestra.
+        """
+        pwd_to_use = password if password else self.master_password
+
         try:
             cmd = [
                 self.seven_zip_exe, "x",       # Extract
-                f"-p{self.master_password}",   # Password
+                f"-p{pwd_to_use}",             # Password (dinámico)
                 f"-o{dest_folder}",            # Output folder
                 "-y",                          # Sobreescribir sin preguntar
                 str(archive_path)
