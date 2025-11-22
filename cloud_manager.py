@@ -16,22 +16,33 @@ class CloudManager:
 
     def __init__(self):
         self.remote = RCLONE_REMOTE
+        # Obtener ruta base desde .env
+        self.rclone_path_env = os.getenv("RCLONE_PATH") 
         self.rclone_exe = self._find_rclone()
 
     def _find_rclone(self) -> str:
-        """Busca rclone en el sistema."""
-        # Intentar buscar en PATH
-        path = shutil.which("rclone")
-        if path:
-            return path
+        """Busca el ejecutable rclone.exe."""
         
-        # Fallback común en Windows
-        if os.name == 'nt':
-            common = Path(r"C:\rclone\rclone.exe")
-            if common.exists():
-                return str(common)
+        # 1. Verificar ruta configurada en .env
+        if self.rclone_path_env:
+            path_obj = Path(self.rclone_path_env)
+            
+            # Si es directorio, buscar rclone.exe dentro
+            if path_obj.is_dir():
+                candidate = path_obj / "rclone.exe"
+                if candidate.exists():
+                    return str(candidate)
+            
+            # Si apunta directo al archivo
+            if path_obj.is_file() and path_obj.exists():
+                return str(path_obj)
+
+        # 2. Intentar buscar en PATH global
+        path_global = shutil.which("rclone")
+        if path_global:
+            return path_global
         
-        # Si no lo encuentra, asumimos que 'rclone' comando funciona o fallará luego
+        # Fallback ciego
         return "rclone"
 
     def _run_rclone(self, args: List[str], timeout: int = 3600) -> bool:
