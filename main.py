@@ -215,9 +215,15 @@ class AppOrchestrator:
         ids = input("\nIngrese ID_GLOBAL a descargar (o 'todas' para descargar la lista): ")
         
         # 3. Descargar
-        files_to_download = resultados if ids == 'todas' else results = resultados[resultados['id_global'].astype(str) == ids.strip()]
+        if ids == 'todas':
+            files_to_download = resultados
+        else:
+            # Filtramos buscando coincidencia exacta con el ID ingresado
+            files_to_download = resultados[resultados['id_global'].astype(str) == ids.strip()]
         
-        if files_to_download.empty: return
+        if files_to_download.empty: 
+            self.print_error("No se encontraron archivos con ese ID.")
+            return
 
         for _, row in files_to_download.iterrows():
             remote_path = f"{row['ruta_relativa']}{row['nombre_encriptado']}.7z"
