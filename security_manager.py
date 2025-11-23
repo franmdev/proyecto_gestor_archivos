@@ -192,7 +192,7 @@ class SecurityManager:
         """
         pwd_to_use = password if password else self.master_password
         
-        # Directorio temporal intermedio con ID único
+        # Directorio temporal intermedio con ID único para evitar colisiones
         temp_extract_dir = dest_folder.parent / f"temp_extract_{uuid.uuid4().hex[:6]}"
         temp_extract_dir.mkdir(parents=True, exist_ok=True)
 
@@ -223,11 +223,11 @@ class SecurityManager:
             if meta_file.exists():
                 meta_file.unlink()
             
-            # 2. Mover contenido real al destino ("Aplanar")
+            # 2. Mover contenido real al destino (Aplanar estructura)
             # El 7z suele contener la carpeta original: temp/GAM/archivos...
             # Nosotros queremos: dest_folder/archivos...
             
-            # Aseguramos que el destino existe y está limpio
+            # Aseguramos que el destino existe y está limpio (vacío)
             if dest_folder.exists():
                 shutil.rmtree(dest_folder)
             dest_folder.mkdir(parents=True, exist_ok=True)

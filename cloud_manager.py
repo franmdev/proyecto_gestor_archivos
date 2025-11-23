@@ -261,6 +261,7 @@ class CloudManager:
                             # CONFIGURACIÓN DE PUNTOS DE CHEQUEO
                             # Tupla: (min_t, max_t, limit_speed, message, is_forced_on_last_try)
                             # MEJORA: El último booleano indica si se debe forzar el chequeo incluso en el último intento
+                            # T1 y T2 se ignoran en el último intento (False al final), pero T3 es mandatorio (True).
                             check_points = [
                                 (SMART_T1_MIN, SMART_T1_MAX, SMART_T1_LIMIT, "Velocidad baja", False),
                                 (SMART_T2_MIN, SMART_T2_MAX, SMART_T2_LIMIT, "Velocidad baja", False),
@@ -380,7 +381,7 @@ class CloudManager:
         else:
             # Subida normal para archivos pequeños
             return self._run_rclone([
-                "copy", 
+                "copyto", 
                 str(local_path), 
                 full_dest,
                 "--progress",       # Barra de progreso visual
@@ -391,6 +392,7 @@ class CloudManager:
         """
         Descarga un archivo específico.
         MEJORA: Inyecta flags optimizados definidos en .env.
+        MEJORA CRÍTICA: Usa 'copyto' para asegurar que el destino sea el archivo exacto y no cree carpetas anidadas.
         """
         # Asegurar directorio destino
         local_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -401,8 +403,10 @@ class CloudManager:
         # Obtener flags optimizados
         opt_flags = self._get_download_flags()
 
+        # IMPORTANTE: Usamos 'copyto' aquí para garantizar que 'local_dest' sea el nombre del archivo
+        # y no cree una carpeta con ese nombre en caso de no existir.
         cmd = [
-            "copyto", # copyto permite renombrar/definir destino exacto
+            "copyto", 
             full_src,
             str(local_dest),
             "--progress",

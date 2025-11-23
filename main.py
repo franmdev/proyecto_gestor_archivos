@@ -67,13 +67,12 @@ class AppOrchestrator:
         """
         witness_name = f"witness_{key_type}.7z"
         local_witness = DATA_DIR / "temp" / witness_name
+        remote_witness_path = f"keys/{witness_name}"
         
         self.print_info(f"Validando clave {key_type} con la nube...")
 
-        if self.cloud.download_file(witness_name, local_witness, silent=True):
+        if self.cloud.download_file(remote_witness_path, local_witness, silent=True):
             is_valid = self.security.verify_password_with_witness(local_witness, password)
-            # NO borramos aquí para evitar bloqueo inmediato, lo haremos en start()
-            
             if is_valid:
                 self.print_success(f"Clave {key_type} VERIFICADA.")
                 return True
@@ -83,9 +82,8 @@ class AppOrchestrator:
         else:
             self.print_info(f"Creando testigo de seguridad para {key_type}...")
             if self.security.create_password_witness(local_witness, password):
-                if self.cloud.upload_file(local_witness, witness_name):
-                    self.print_success(f"Testigo {key_type} creado.")
-                    # Aquí si podemos borrar, es local recien creado
+                if self.cloud.upload_file(local_witness, remote_witness_path):
+                    self.print_success(f"Testigo {key_type} creado en carpeta 'keys/'.")
                     self.safe_delete(local_witness)
                     return True
             return False
@@ -122,7 +120,7 @@ class AppOrchestrator:
             if not self._validate_and_sync_key('master', m_pass): sys.exit(1)
             if not self._validate_and_sync_key('csv', c_pass): sys.exit(1)
 
-            # --- LIMPIEZA DE TESTIGOS (MEJORA: Espera 5s y borra) ---
+            # Limpieza de testigos
             self.print_info("Limpiando testigos en 5 segundos...")
             time.sleep(5)
             self.safe_delete(DATA_DIR / "temp" / "witness_master.7z")
@@ -130,6 +128,29 @@ class AppOrchestrator:
 
             self.print_success("Sistemas inicializados.")
             
+            # --- NUEVO: VALIDACIÓN DE ATOMICIDAD (SYNC CHECK) ---
+            self.print_info("Verificando integridad del índice con la nube...")
+            local_idx_check = DATA_DIR / "temp" / "index_atomic_check.7z"
+            
+            if self.cloud.download_file("index/index_main.7z", local_idx_check, silent=True):
+                # Comparamos
+                status = self.inventory.compare_local_vs_cloud_backup(self.security, local_idx_check)
+                self.safe_delete(local_idx_check)
+                
+                if status == 'LOCAL_NEWER':
+                    print(f"{Fore.YELLOW}⚠️  ATENCIÓN: Tu índice LOCAL tiene más datos que la NUBE.{Style.RESET_ALL}")
+                    if input("¿Deseas actualizar la nube ahora? (s/n): ").lower() == 's':
+                        encrypted = self.inventory.save_encrypted_backup(self.security, prefix="SYNC_FIX")
+                        if encrypted and self.cloud.upload_file(encrypted, "index/index_main.7z"):
+                            self.print_success("Nube actualizada correctamente.")
+                elif status == 'CLOUD_NEWER':
+                    print(f"{Fore.YELLOW}⚠️  ATENCIÓN: La NUBE tiene más datos que tu local.{Style.RESET_ALL}")
+                    self.print_info("Se recomienda usar la opción '2. Descarga' para sincronizar o revisar.")
+                elif status == 'EQUAL':
+                    self.print_success("Índices sincronizados.")
+            else:
+                self.print_info("No existe índice en nube aún (o error de conexión).")
+
         except Exception as e:
             self.print_error(f"Error de inicio: {e}")
             sys.exit(1)
@@ -164,18 +185,12 @@ class AppOrchestrator:
         if not source_path.exists():
             return self.print_error("La ruta no existe.")
 
-        # Escaneo inicial
         items_encontrados = self.cloud.scan_local_folders(source_path)
         if not items_encontrados:
             return self.print_error("No se encontraron subcarpetas con prefijos válidos.")
 
-        # --- LÓGICA MEJORADA: EXPANSIÓN DE CARPETAS CONTENEDORAS ---
-        # Si la carpeta se llama EXACTAMENTE como un prefijo (ej: "GAM"), 
-        # procesamos sus HIJOS individualmente.
-        
         carpetas_a_procesar = []
         for item in items_encontrados:
-            # Caso 1: Es un contenedor (ej: nombre = "GAM")
             if item.name in VALID_PREFIXES:
                 hijos = [h for h in item.iterdir() if h.is_dir()]
                 if hijos:
@@ -184,7 +199,6 @@ class AppOrchestrator:
                 else:
                     self.print_info(f"Contenedor {item.name} vacío.")
             else:
-                # Caso 2: Es una carpeta normal con prefijo en el nombre (ej: "DOC_Finanzas")
                 carpetas_a_procesar.append(item)
 
         carpetas_a_procesar = sorted(carpetas_a_procesar)
@@ -201,9 +215,6 @@ class AppOrchestrator:
 
         for idx, carpeta in enumerate(carpetas_a_procesar, 1):
             try:
-                # Detección de prefijo:
-                # 1. Si el nombre empieza con prefijo (DOC_x)
-                # 2. Si el padre es el prefijo (GAM/Juego1 -> prefijo=GAM)
                 prefijo = None
                 name_prefix = carpeta.name.split('_')[0] if '_' in carpeta.name else carpeta.name[:3].upper()
                 
@@ -216,7 +227,6 @@ class AppOrchestrator:
                     print(f"{Fore.RED}⚠️  Saltando {carpeta.name}: Prefijo desconocido.{Style.RESET_ALL}")
                     continue
 
-                # VALIDACIÓN DUPLICADOS
                 if self.inventory.check_exists(prefijo, carpeta.name):
                     print(f"{Fore.YELLOW}⚠️  [{idx}/{total_files}] Saltando duplicado: {carpeta.name}{Style.RESET_ALL}")
                     skipped_count += 1
@@ -241,11 +251,12 @@ class AppOrchestrator:
 
                 print(f"{Fore.CYAN}📦 Encriptando...{Style.RESET_ALL}")
                 filename_7z = f"{hash_nombre}.7z"
-                dest_7z = source_path / filename_7z # Temporal en raíz
+                dest_7z = source_path / filename_7z 
                 
                 if self.security.compress_encrypt_7z(carpeta, dest_7z, metadata=metadata_json):
                     print(f"{Fore.GREEN}   ✅ Encriptado.{Style.RESET_ALL}")
 
+                    # Preparamos registro pero NO lo guardamos todavía (Estrategia A)
                     record = {
                         'id_global': next_global, 'id_prefix': next_prefix, 'prefijo': prefijo,
                         'nombre_original': carpeta.name, 'nombre_original_encrypted': nombre_orig_encrypted,
@@ -253,17 +264,21 @@ class AppOrchestrator:
                         'carpeta_hija': filename_7z, 'tamaño_mb': size_mb,
                         'hash_md5': md5_hash, 'fecha_procesado': fecha_fmt, 'notas': "Auto Upload"
                     }
-                    self.inventory.add_record(record)
                     
                     print(f"{Fore.CYAN}⬆️  Subiendo a la nube...{Style.RESET_ALL}")
                     
-                    # Subida a carpeta PREFIJO
+                    # Intentamos subir PRIMERO
                     if self.cloud.upload_file(dest_7z, prefijo):
                         print(f"{Fore.GREEN}   ✅ Subida OK.{Style.RESET_ALL}")
+                        
+                        # SI SUBIDA OK -> REGISTRAMOS EN CSV
+                        self.inventory.add_record(record)
                         self.safe_delete(dest_7z)
                         processed_count += 1
                     else:
-                        self.print_error("Fallo subida.")
+                        # SI SUBIDA FALLA -> NO REGISTRAMOS, BORRAMOS TEMP Y CONTINUAMOS
+                        self.print_error("Fallo subida. No se registrará en índice.")
+                        self.safe_delete(dest_7z)
                 
             except Exception as e:
                 self.print_error(f"Error procesando {carpeta.name}: {e}")
@@ -275,8 +290,8 @@ class AppOrchestrator:
             self.print_info("Sincronizando índice en la nube...")
             encrypted_index_path = self.inventory.save_encrypted_backup(self.security, prefix="UPLOAD")
             if encrypted_index_path:
-                if self.cloud.upload_file(encrypted_index_path, ""):
-                    self.print_success("Índice actualizado.")
+                if self.cloud.upload_file(encrypted_index_path, "index/index_main.7z"):
+                    self.print_success("Índice actualizado en 'index/'.")
                 else:
                     self.print_error("No se pudo subir índice.")
             
@@ -288,7 +303,7 @@ class AppOrchestrator:
         self.print_info("Sincronizando índice...")
         local_idx_enc = Path("data/temp/index_main_download.7z")
         
-        if self.cloud.download_file("index_main.7z", local_idx_enc, silent=True):
+        if self.cloud.download_file("index/index_main.7z", local_idx_enc, silent=True):
             if self.inventory.load_from_encrypted(self.security, local_idx_enc, temp_only=True):
                 self.print_success("Índice actualizado.")
         else:
@@ -308,7 +323,6 @@ class AppOrchestrator:
 
         sel_idx = input("\n👉 Seleccione el NÚMERO (#) del Prefijo (o 0 para Salir/Volver): ").strip()
         
-        # MEJORA: Opción 0 para volver y limpiar
         if not sel_idx.isdigit() or int(sel_idx) == 0: 
             self.safe_delete(local_idx_enc)
             return
@@ -369,8 +383,6 @@ class AppOrchestrator:
             
             if self.cloud.download_file(remote_path, local_7z, silent=False):
                 print(f"{Fore.YELLOW}📦 Desencriptando y descomprimiendo...{Style.RESET_ALL}")
-                
-                # decrypt_extract_7z maneja la limpieza de metadatos y aplanado
                 if self.security.decrypt_extract_7z(local_7z, local_dest_folder):
                     print(f"{Fore.GREEN}   ✅ Restaurado en: {local_dest_folder}{Style.RESET_ALL}")
                     self.safe_delete(local_7z)
@@ -379,7 +391,7 @@ class AppOrchestrator:
             else:
                 self.print_error("Fallo en descarga desde la nube.")
         
-        self.safe_delete(local_idx_enc) # Limpieza final
+        self.safe_delete(local_idx_enc) 
         print(f"\n{Fore.GREEN}✨ Lote completado.{Style.RESET_ALL}")
 
     def run_query_mode(self):
