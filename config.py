@@ -23,13 +23,42 @@ load_dotenv()  # Carga el archivo .env si existe
 # Nombre del remote en rclone (ej: mi_remote)
 RCLONE_REMOTE = os.getenv("RCLONE_REMOTE_NAME", "mi_remote")
 
-# NUEVO: Ruta base en la nube (ej: "backup")
-# Si no se define en .env, usa vacío (raíz)
+# Ruta base en la nube (ej: "backup")
 RCLONE_REMOTE_PATH = os.getenv("RCLONE_REMOTE_PATH", "")
 
 # Ruta al ejecutable 7-Zip
-# Intenta leer del .env, si no, usa valores por defecto según el sistema operativo
 SEVEN_ZIP_PATH = os.getenv("SEVEN_ZIP_PATH", "7za.exe" if os.name == 'nt' else "7z")
+
+# --- NUEVO: CONFIGURACIÓN SMART UPLOAD (Routing Fix) ---
+# Cantidad máxima de intentos de subida antes de rendirse
+SMART_MAX_RETRIES = int(os.getenv("SMART_MAX_RETRIES", 3))
+
+# Tiempos de chequeo (segundos) y límites de velocidad (MB/s)
+# Estos valores se leen del .env y se usan en el bucle de cloud_manager
+SMART_T1_MIN = int(os.getenv("SMART_T1_MIN", 10))
+SMART_T1_MAX = int(os.getenv("SMART_T1_MAX", 12))
+SMART_T1_LIMIT = float(os.getenv("SMART_T1_LIMIT", 8.0))
+
+SMART_T2_MIN = int(os.getenv("SMART_T2_MIN", 20))
+SMART_T2_MAX = int(os.getenv("SMART_T2_MAX", 22))
+SMART_T2_LIMIT = float(os.getenv("SMART_T2_LIMIT", 8.0))
+
+SMART_T3_MIN = int(os.getenv("SMART_T3_MIN", 30))
+SMART_T3_MAX = int(os.getenv("SMART_T3_MAX", 32))
+SMART_T3_LIMIT = float(os.getenv("SMART_T3_LIMIT", 15.0))
+
+# --- NUEVO: CONFIGURACIÓN OPTIMIZADA DE DESCARGA (RCLONE) ---
+# Flags para maximizar ancho de banda
+DL_TRANSFERS = os.getenv("DL_TRANSFERS", "8")
+DL_CHECKERS = os.getenv("DL_CHECKERS", "16")
+DL_MULTI_THREAD_STREAMS = os.getenv("DL_MULTI_THREAD_STREAMS", "8")
+DL_MULTI_THREAD_CUTOFF = os.getenv("DL_MULTI_THREAD_CUTOFF", "200M")
+DL_BUFFER_SIZE = os.getenv("DL_BUFFER_SIZE", "200M")
+DL_WRITE_BUFFER_SIZE = os.getenv("DL_WRITE_BUFFER_SIZE", "1Mi")
+
+# Flags Booleanos (Enable/Disable)
+_http2_env = os.getenv("DL_DISABLE_HTTP2", "true").lower()
+DL_DISABLE_HTTP2 = _http2_env in ("true", "1", "yes", "on")
 
 # --- 4. CONSTANTES DE NEGOCIO ---
 # Prefijos permitidos para organizar carpetas

@@ -5,6 +5,7 @@ import shutil
 import hashlib
 import base64
 import subprocess
+import uuid
 from pathlib import Path
 from typing import Dict, Tuple, Optional
 
@@ -186,15 +187,20 @@ class SecurityManager:
     def decrypt_extract_7z(self, archive_path: Path, dest_folder: Path, password: str = None) -> bool:
         """
         Desencripta y extrae un archivo .7z.
-        MODIFICACIÓN: Acepta 'password' opcional para usar una clave distinta a la maestra.
+        MEJORA: Extrae en temporal, elimina metadatos.json y mueve el contenido limpio
+        al destino final, evitando la estructura anidada GAM/GAM.
         """
         pwd_to_use = password if password else self.master_password
+        
+        # Directorio temporal intermedio con ID único
+        temp_extract_dir = dest_folder.parent / f"temp_extract_{uuid.uuid4().hex[:6]}"
+        temp_extract_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             cmd = [
                 self.seven_zip_exe, "x",       # Extract
                 f"-p{pwd_to_use}",             # Password (dinámico)
-                f"-o{dest_folder}",            # Output folder
+                f"-o{temp_extract_dir}",       # Output a temporal
                 "-y",                          # Sobreescribir sin preguntar
                 str(archive_path)
             ]
@@ -202,17 +208,51 @@ class SecurityManager:
             result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8')
             
             if result.returncode != 0:
-                # Error común: Contraseña incorrecta
                 if "Wrong password" in result.stderr or "Data Error" in result.stderr:
                     logger.error("❌ Contraseña incorrecta o archivo corrupto.")
                 else:
                     logger.error(f"❌ Error extrayendo 7z: {result.stderr}")
+                # Limpieza en caso de error
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
                 return False
-                
+            
+            # --- LIMPIEZA POST-EXTRACCIÓN ---
+            
+            # 1. Eliminar metadatos.json si existe
+            meta_file = temp_extract_dir / "metadatos.json"
+            if meta_file.exists():
+                meta_file.unlink()
+            
+            # 2. Mover contenido real al destino ("Aplanar")
+            # El 7z suele contener la carpeta original: temp/GAM/archivos...
+            # Nosotros queremos: dest_folder/archivos...
+            
+            # Aseguramos que el destino existe y está limpio
+            if dest_folder.exists():
+                shutil.rmtree(dest_folder)
+            dest_folder.mkdir(parents=True, exist_ok=True)
+
+            items = list(temp_extract_dir.iterdir())
+            
+            for item in items:
+                if item.is_dir():
+                    # Si encontramos una carpeta (ej: GAM), movemos SU CONTENIDO al destino
+                    # Esto "aplana" la estructura y quita la carpeta redundante
+                    for subitem in item.iterdir():
+                        shutil.move(str(subitem), str(dest_folder))
+                else:
+                    # Si es un archivo suelto (fuera de carpeta), lo movemos directamente
+                    shutil.move(str(item), str(dest_folder))
+
             return True
+
         except Exception as e:
             logger.error(f"Excepción en extracción: {e}")
             return False
+        finally:
+            # Limpiar directorio temporal intermedio
+            if temp_extract_dir.exists():
+                shutil.rmtree(temp_extract_dir, ignore_errors=True)
 
     def recover_metadata_from_7z(self, archive_path: Path) -> Dict:
         """

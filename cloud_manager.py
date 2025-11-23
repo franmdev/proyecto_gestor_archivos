@@ -8,10 +8,22 @@ import sys
 import signal
 from pathlib import Path
 from typing import List, Dict, Optional, Union
+from tqdm import tqdm  # Importamos la librería para la barra de progreso
 
 # Configuración
-# AGREGADO: Importamos RCLONE_REMOTE_PATH
-from config import logger, RCLONE_REMOTE, RCLONE_REMOTE_PATH, VALID_PREFIXES, DATA_DIR
+# AGREGADO: Importamos RCLONE_REMOTE_PATH y configuraciones Smart
+from config import (
+    logger, RCLONE_REMOTE, RCLONE_REMOTE_PATH, VALID_PREFIXES, DATA_DIR,
+    # Variables Smart Upload
+    SMART_MAX_RETRIES,
+    SMART_T1_MIN, SMART_T1_MAX, SMART_T1_LIMIT,
+    SMART_T2_MIN, SMART_T2_MAX, SMART_T2_LIMIT,
+    SMART_T3_MIN, SMART_T3_MAX, SMART_T3_LIMIT,
+    # Variables Download Optimization
+    DL_TRANSFERS, DL_CHECKERS, DL_MULTI_THREAD_STREAMS, 
+    DL_MULTI_THREAD_CUTOFF, DL_BUFFER_SIZE, DL_WRITE_BUFFER_SIZE,
+    DL_DISABLE_HTTP2
+)
 
 class CloudManager:
     """
@@ -22,7 +34,6 @@ class CloudManager:
     def __init__(self):
         self.remote = RCLONE_REMOTE
         self.base_path = RCLONE_REMOTE_PATH # La carpeta base del .env
-        # Obtener ruta base desde .env
         self.rclone_path_env = os.getenv("RCLONE_PATH") 
         self.rclone_exe = self._find_rclone()
 
@@ -63,6 +74,11 @@ class CloudManager:
             # Asegurar que no haya slash duplicado
             base = self.base_path.strip("/")
             clean_sub = subpath.strip("/")
+            
+            # Si el subpath está vacío (ej: subiendo a la raíz del backup), no agregar slash
+            if not clean_sub:
+                return f"{self.remote}:{base}"
+                
             return f"{self.remote}:{base}/{clean_sub}"
         else:
             # Comportamiento original (Raíz)
@@ -86,6 +102,46 @@ class CloudManager:
         if 'M' in unit: return value
         if 'G' in unit: return value * 1024
         return 0.0
+
+    def _parse_progress(self, line: str) -> tuple[int, int]:
+        """
+        Extrae bytes transferidos y total para actualizar la barra tqdm.
+        Retorna (bytes_actuales, bytes_totales)
+        """
+        # Regex para capturar "Transferred: 200 MiB / 2.991 GiB"
+        match = re.search(r'Transferred:\s+(\d+\.?\d*)\s+([kKMGT]?i?B)\s+/\s+(\d+\.?\d*)\s+([kKMGT]?i?B)', line)
+        
+        if not match:
+            return 0, 0
+
+        def to_bytes(val, unit):
+            val = float(val)
+            unit = unit.upper()
+            if 'K' in unit: return int(val * 1024)
+            if 'M' in unit: return int(val * 1024 * 1024)
+            if 'G' in unit: return int(val * 1024 * 1024 * 1024)
+            return int(val)
+
+        current = to_bytes(match.group(1), match.group(2))
+        total = to_bytes(match.group(3), match.group(4))
+        return current, total
+
+    def _get_download_flags(self) -> List[str]:
+        """
+        Construye la lista de flags optimizados para descarga desde config.
+        Permite inyectar parámetros avanzados de Rclone.
+        """
+        flags = [
+            f"--transfers={DL_TRANSFERS}",
+            f"--checkers={DL_CHECKERS}",
+            f"--multi-thread-streams={DL_MULTI_THREAD_STREAMS}",
+            f"--multi-thread-cutoff={DL_MULTI_THREAD_CUTOFF}",
+            f"--buffer-size={DL_BUFFER_SIZE}",
+            f"--multi-thread-write-buffer-size={DL_WRITE_BUFFER_SIZE}",
+        ]
+        if DL_DISABLE_HTTP2:
+            flags.append("--disable-http2")
+        return flags
 
     def _run_rclone(self, args: List[str], timeout: int = 3600, show_progress: bool = False) -> bool:
         """
@@ -129,6 +185,7 @@ class CloudManager:
         """
         Lógica de subida inteligente para evitar routing subóptimo (BGP).
         Evalúa velocidad a los 10s, 20s y 30s. Si es baja, reinicia la conexión.
+        Implementa barra de progreso TQDM.
         """
         # COMANDO OPTIMIZADO (Solicitud Usuario)
         base_cmd = [
@@ -142,8 +199,15 @@ class CloudManager:
             "-v" # Verbose para ver detalles si falla
         ]
 
-        max_retries = 3
+        # MEJORA: Leer intentos máximos desde Config
+        max_retries = SMART_MAX_RETRIES
         
+        # Obtener tamaño total del archivo para la barra inicial
+        try:
+            total_size = os.path.getsize(local_path)
+        except:
+            total_size = 0
+
         for attempt in range(1, max_retries + 1):
             if attempt > 1:
                 logger.info(f"🔄 Reintentando subida (Intento {attempt}/{max_retries}) por baja velocidad...")
@@ -161,6 +225,11 @@ class CloudManager:
             start_time = time.time()
             killed = False
             
+            # Inicializar barra TQDM
+            # MEJORA: Agregamos [Avg] a la descripción para aclarar
+            pbar = tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"Subiendo (Intento {attempt}) [Avg]", leave=False)
+            last_bytes = 0
+
             try:
                 while True:
                     # Leer línea por línea
@@ -169,16 +238,15 @@ class CloudManager:
                         break
                     
                     if line:
-                        line = line.strip()
-                        # Filtramos solo la línea relevante ("Transferred: ...")
-                        # y usamos \r para sobrescribir la línea actual.
+                        # Si encontramos datos de progreso, actualizamos la barra
                         if "Transferred:" in line and "%" in line:
-                            # Limpiamos la línea un poco y sobrescribimos
-                            sys.stdout.write(f"\r   🚀 {line}      ")
-                            sys.stdout.flush()
-                        
-                        # Ignoramos las líneas ruidosas para no ensuciar la consola
-                        # (Transferring, Elapsed time, etc se ocultan)
+                            curr_bytes, tot_bytes = self._parse_progress(line)
+                            if tot_bytes > 0:
+                                # TQDM update es incremental, calculamos el delta
+                                delta = curr_bytes - last_bytes
+                                if delta > 0:
+                                    pbar.update(delta)
+                                    last_bytes = curr_bytes
                         
                         # ANÁLISIS DE VELOCIDAD EN TIEMPO REAL
                         elapsed = time.time() - start_time
@@ -187,33 +255,39 @@ class CloudManager:
                         if "KiB/s" in line or "MiB/s" in line or "GiB/s" in line:
                             speed = self._parse_speed(line)
                             
-                            # Si es el último intento, no cortamos, aceptamos lo que sea
-                            if attempt < max_retries:
-                                # Hito 1: 10-12 segundos (Umbral 8 MB/s)
-                                if 10 <= elapsed <= 12 and speed < 8.0:
-                                    logger.warning(f"⚠️ Velocidad baja ({speed:.2f} MB/s) a los 10s. Reiniciando routing...")
-                                    process.terminate()
-                                    killed = True
-                                    break
-                                
-                                # Hito 2: 20-22 segundos (Umbral 8 MB/s)
-                                if 20 <= elapsed <= 22 and speed < 8.0:
-                                    logger.warning(f"⚠️ Velocidad baja ({speed:.2f} MB/s) a los 20s. Reiniciando routing...")
-                                    process.terminate()
-                                    killed = True
-                                    break
+                            # MEJORA: Actualizar descripción con velocidad instantanea ("Speed")
+                            pbar.set_postfix(Speed=f"{speed:.2f} MB/s")
 
-                                # Hito 3: 30-32 segundos (Umbral 15 MB/s - Objetivo)
-                                if 30 <= elapsed <= 32 and speed < 15.0:
-                                    logger.warning(f"⚠️ Velocidad insuficiente ({speed:.2f} MB/s) a los 30s. Buscando mejor ruta...")
+                            # CONFIGURACIÓN DE PUNTOS DE CHEQUEO
+                            # Tupla: (min_t, max_t, limit_speed, message, is_forced_on_last_try)
+                            # MEJORA: El último booleano indica si se debe forzar el chequeo incluso en el último intento
+                            check_points = [
+                                (SMART_T1_MIN, SMART_T1_MAX, SMART_T1_LIMIT, "Velocidad baja", False),
+                                (SMART_T2_MIN, SMART_T2_MAX, SMART_T2_LIMIT, "Velocidad baja", False),
+                                (SMART_T3_MIN, SMART_T3_MAX, SMART_T3_LIMIT, "Velocidad insuficiente", True) # Corte mandatorio T3
+                            ]
+
+                            for (t_min, t_max, min_speed, msg, force_check) in check_points:
+                                # Lógica: Chequeamos si NO es el último intento, O si es un chequeo forzoso (T3)
+                                should_check = (attempt < max_retries) or force_check
+                                
+                                if should_check and (t_min <= elapsed <= t_max) and (speed < min_speed):
+                                    # Cerramos barra limpiamente antes de loguear
+                                    pbar.close()
+                                    logger.warning(f"⚠️ {msg} ({speed:.2f} MB/s) a los {t_min}s. Reiniciando routing...")
                                     process.terminate()
                                     killed = True
                                     break
+                            
+                            if killed: break
 
             except Exception as e:
+                pbar.close()
                 logger.error(f"Error monitoreando proceso: {e}")
                 process.terminate()
                 killed = True
+            
+            pbar.close() # Asegurar cierre de barra al terminar el while
 
             # Esperar a que cierre
             if killed:
@@ -286,6 +360,7 @@ class CloudManager:
         """
         Sube un archivo específico con barra de progreso.
         MEJORA: Si el archivo es grande (>500MB), usa lógica Smart Upload.
+        IMPORTANTE: 'remote_path' debe ser el DESTINO (carpeta o archivo).
         """
         local_path = Path(local_path)
         # MEJORA: Usar constructor de ruta inteligente
@@ -315,7 +390,7 @@ class CloudManager:
     def download_file(self, remote_path: str, local_dest: Path, silent: bool = False) -> bool:
         """
         Descarga un archivo específico.
-        MEJORA: Parametro 'silent' para controlar si mostramos barra o no (útil para índices).
+        MEJORA: Inyecta flags optimizados definidos en .env.
         """
         # Asegurar directorio destino
         local_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -323,13 +398,18 @@ class CloudManager:
         # MEJORA: Usar constructor de ruta inteligente
         full_src = self._build_remote_path(remote_path)
         
-        return self._run_rclone([
+        # Obtener flags optimizados
+        opt_flags = self._get_download_flags()
+
+        cmd = [
             "copyto", # copyto permite renombrar/definir destino exacto
             full_src,
             str(local_dest),
             "--progress",
             "--stats-one-line"
-        ], show_progress=not silent)
+        ] + opt_flags # <-- Añadimos los flags extra aquí
+        
+        return self._run_rclone(cmd, show_progress=not silent)
 
     def sync_up(self, local_dir: Path, remote_dir: str) -> bool:
         """Sincroniza una carpeta local hacia la nube (Unidireccional)."""
