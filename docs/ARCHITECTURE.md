@@ -1,8 +1,3 @@
-### 2. `docs/ARCHITECTURE.md`
-
-Explica cómo está construido el software internamente.
-
-```markdown
 # 🏗️ Arquitectura del Sistema
 
 ## Patrón de Diseño: Facade (Fachada)
