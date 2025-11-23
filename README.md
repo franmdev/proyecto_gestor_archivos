@@ -1,57 +1,68 @@
-# 🔐 Gestor de Archivos Encriptados (Secure Cloud Vault) v2.5
+# 🔐 Secure Cloud Vault (Gestor de Archivos Encriptados) v3.0
 
-> **Sistema de preservación digital con arquitectura Facade, encriptación AES-256 Zero-Knowledge y optimización de red "Smart Upload" para nubes públicas.**
+> **Sistema de preservación digital Zero-Knowledge con optimización de red activa ("Smart Upload"), integridad transaccional y arquitectura modular.**
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue)
-![License](https://img.shields.io/badge/License-MIT-green)
-![Security](https://img.shields.io/badge/Encryption-AES256%20%2B%207z-red)
-![Network](https://img.shields.io/badge/Network-Smart%20Routing%20Fix-orange)
+![Security](https://img.shields.io/badge/Encryption-AES256%20%2B%20Fernet-red)
+![Network](https://img.shields.io/badge/Network-Smart%20BGP%20Routing-orange)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
+
+Este proyecto es una solución de ingeniería de software diseñada para resolver tres problemas críticos en el almacenamiento en la nube pública (OneDrive, GDrive, etc.): **Privacidad**, **Velocidad de Transferencia** e **Integridad de Datos**.
+
+A diferencia de clientes de sincronización estándar, este sistema actúa como un orquestador que encripta todo localmente antes de subirlo, gestiona su propio índice de base de datos y **manipula activamente la conexión de red** para evitar rutas saturadas.
 
 ---
 
-## 📚 Documentación Técnica Detallada
+## 🚀 Características Clave
 
-Para comprender la profundidad del sistema, consulte los siguientes documentos en la carpeta `docs/`:
+### 1. ⚡ Smart Upload (Corrección de Routing BGP)
 
-* **[🏗️ Arquitectura del Sistema](docs/ARCHITECTURE.md):** Explica el patrón Facade, el flujo "Smart Upload" y la gestión de datos.
-* **[🛡️ Modelo de Seguridad](docs/SECURITY.md):** Detalles sobre criptografía, testigos de validación (Witness Files) y doble autenticación.
-* **[🔧 Solución de Problemas](docs/TROUBLESHOOTING.md):** Guía para errores comunes (WinError 5, Excel, Red).
+El sistema no acepta pasivamente la velocidad que ofrece el proveedor de nube.
+
+* **Monitoreo Activo:** Analiza el flujo de datos en tiempo real.
+* **Lógica de Decisión:** Si la velocidad cae por debajo de umbrales definidos (ej: <8 MB/s en T=10s), el sistema **mata el proceso** y renegocia la conexión.
+* **Resultado:** Forza al ISP/Cloud Provider a asignar una nueva ruta de enrutamiento, logrando saltos de velocidad de 2 MB/s a +40 MB/s automáticamente.
+
+### 2. 🛡️ Arquitectura Zero-Knowledge
+
+* **Doble Factor Lógico:** Separación de secretos para Archivos (`.7z`) y Metadatos (`.csv`).
+* **Ofuscación Total:** Los nombres de archivo en la nube son hashes aleatorios (ej: `a9966813c2ed.7z`). Nadie, ni el proveedor de la nube, puede saber qué contienen.
+* **Witness Files:** Validación de identidad mediante archivos testigo en la nube (`backup/keys/`) antes de permitir cualquier operación local destructiva.
+
+### 3. 💾 Integridad y Atomicidad
+
+* **Base de Datos Distribuida:** El índice (`index_main.csv`) vive encriptado tanto localmente como en la nube (`backup/index/`).
+* **Sync Check:** Al iniciar, compara la versión local contra la nube para asegurar la consistencia.
+* **Transacciones Seguras:** El registro en la base de datos solo ocurre **después** de una subida exitosa confirmada (Commit-like logic).
 
 ---
 
-## 📋 Descripción General
+## 📚 Documentación Técnica
 
-Este proyecto es una solución robusta para la gestión y respaldo de archivos sensibles en la nube. A diferencia de las soluciones comerciales, garantiza **Privacidad Cero-Conocimiento** mediante un esquema de doble autenticación y nombres de archivo ofuscados.
+Para profundizar en la ingeniería del proyecto:
 
-Integra una lógica de **"Smart Upload"** diseñada específicamente para combatir el *routing subóptimo* (BGP) común en servicios como OneDrive o Google Drive, garantizando velocidades de transferencia óptimas.
-
-### 🚀 Características Principales
-
-* **Smart Upload (Routing Fix):** Monitoreo en tiempo real de la velocidad de subida. Si detecta una ruta lenta (<8 MB/s), reinicia la conexión automáticamente para buscar una mejor ruta de red.
-* **Modo "Store" Ultrarrápido:** Utiliza compresión `-mx=0` (solo almacenamiento) con encriptación AES-256 `-mhe=on`. Prioriza la velocidad de cifrado para grandes volúmenes de datos.
-* **Seguridad de Grado Militar:** Encriptación AES-256 multinivel (Contenido + Nombres + Índice).
-* **Validación Remota (Witness):** Verifica las contraseñas contra archivos testigo en la nube antes de iniciar operaciones, evitando corrupción de datos por claves erróneas.
-* **Gestión de Inventario:** Base de datos local (CSV) compatible con Excel (`utf-8-sig`), detección de duplicados y recuperación ante desastres.
-* **Descarga Jerárquica:** Explorador visual de archivos por prefijos en la terminal.
+* **[🏗️ Arquitectura y Diseño](docs/ARCHITECTURE.md):** Patrones de diseño, flujo de datos y estructura de carpetas.
+* **[🛡️ Seguridad Criptográfica](docs/SECURITY.md):** Detalles sobre AES-256, derivación de claves y manejo de temporales.
+* **[🔧 Desafíos y Soluciones (Engineering Journal)](docs/TROUBLESHOOTING.md):** *Lectura recomendada.* Documentación de los problemas complejos resueltos durante el desarrollo.
 
 ---
 
 ## 🛠️ Requisitos del Sistema
 
-1. **Python 3.9+**
+1. **Python 3.10+**
 2. **Rclone:** Configurado y accesible en el sistema o en ruta portable.
 3. **7-Zip:** Instalado o en versión portable (`7za.exe`).
-4. **Entorno:** Windows (probado en 10/11), Linux o macOS.
+4. **Entorno:** Windows, Linux o macOS.
 
 ---
 
-## 📦 Instalación y Configuración
+## 📦 Instalación
 
-### 1. Clonar el Repositorio
+### 1. Clonar Repositorio
 
 ```bash
-git clone https://github.com/TU_USUARIO/gestor-archivos-secure.git
-cd gestor-archivos-secure
+git clone https://github.com/tu-usuario/secure-cloud-vault.git
+cd secure-cloud-vault
 ```
 
 ### 2. Preparar Entorno Virtual
@@ -72,66 +83,76 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 4. Configuración de Variables (.env)
+### 4. Configurar Entorno (.env)
 
-Crea un archivo `.env` en la raíz. Nota: RCLONE_REMOTE_PATH define la carpeta contenedora en la nube.
+Crea un archivo `.env` en la raíz basado en el siguiente esquema:
 
 ```ini
-# Ruta a la carpeta de rclone (opcional si está en PATH)
-RCLONE_PATH=C:\_rclone
-
-# Nombre del remote configurado en 'rclone config'
-RCLONE_REMOTE_NAME=mi_remote_seguro
-
-# Carpeta base en la nube (El sistema la creará automáticamente)
-# Ejemplo: Los archivos irán a mi_remote_seguro:backup/DOC/...
+# Configuración de Rclone
+RCLONE_REMOTE_NAME=mi_remote_drive
 RCLONE_REMOTE_PATH=backup
 
-# Ruta a la carpeta de 7z (portable o instalada)
-SEVEN_ZIP_PATH=C:\_rclone\_7z\x64
+# Rutas a binarios (Opcional si están en PATH)
+# RCLONE_PATH=C:\bin\rclone
+# SEVEN_ZIP_PATH=C:\Program Files\7-Zip
 
-# Configuración General
-MIN_PASSWORD_LENGTH=12
-DEBUG=false
+# Tuning de Smart Upload (Umbrales de reinicio)
+SMART_MAX_RETRIES=3
+SMART_T1_LIMIT=8.0  # MB/s
+
+# Optimización de Descarga
+DL_TRANSFERS=8
+DL_DISABLE_HTTP2=true
 ```
 
 ---
 
 ## 💻 Uso
 
-Ejecuta el orquestador principal:
+Ejecute el orquestador:
 
 ```bash
 python main.py
 ```
 
-### Flujo de Trabajo
+### Menú Principal
 
-- **Login:** Ingrese y confirme su Contraseña Maestra y Contraseña CSV. El sistema validará contra la nube.
-- **Modo Subida:** Arrastre carpetas. El sistema detectará prefijos, validará duplicados y aplicará "Smart Upload" si el archivo es grande (>500MB).
-- **Modo Descarga:** Seleccione un Prefijo numéricamente -> Vea la lista -> Seleccione IDs para descargar.
-- **Mantenimiento:** Verifique la conexión y limpie temporales.
+- **📤 Modo Subida:**
+  - Arrastre una carpeta padre. El sistema detectará subcarpetas válidas (ej: GAM, DOC).
+  - Si la carpeta es un contenedor (ej: GAM), procesará cada juego/item individualmente.
+  - Aplicará compresión "Store" (sin compresión, solo cifrado) para máxima velocidad.
+
+- **📥 Modo Descarga:**
+  - Explorador visual de sus archivos en la nube.
+  - Seleccione por ID para descargar y restaurar automáticamente.
+
+- **🔍 Consultar Índice:** Estadísticas y últimos movimientos.
+
+- **🔧 Mantenimiento:** Limpieza de temporales y test de conexión.
 
 ---
 
-## 📂 Estructura del Proyecto
+## 📂 Estructura de Nube Generada
+
+El sistema mantiene el orden automáticamente:
 
 ```
-GESTOR/
-├── config.py              # Configuración central y Logging
-├── main.py                # Orquestador (UI y Flujo)
-├── cloud_manager.py       # Fachada para Rclone y FS Local
-├── security_manager.py    # Fachada para Criptografía y 7-Zip
-├── inventory_manager.py   # Fachada para Pandas/CSV
-├── requirements.txt       # Dependencias
-├── .env                   # Variables de entorno (No subir a git)
-└── data/                  # Almacenamiento local de índices y logs
+R:/backup/
+├── index/
+│   └── index_main.7z       # Base de datos encriptada
+├── keys/
+│   ├── witness_master.7z   # Testigo validación Master
+│   └── witness_csv.7z      # Testigo validación CSV
+├── DOC/
+│   ├── a4f1...7z           # Documento encriptado
+│   └── ...
+└── GAM/
+    ├── b1c2...7z           # Juego encriptado
+    └── ...
 ```
 
 ---
 
 ## 📄 Licencia
 
-Este proyecto está bajo la Licencia MIT. Consulte el archivo LICENSE para más detalles.
-
-Desarrollado con ❤️, Paranoia y Optimización de Red.
+MIT License. Desarrollado con enfoque en seguridad y performance.
