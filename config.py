@@ -47,6 +47,10 @@ SMART_T3_MIN = int(os.getenv("SMART_T3_MIN", 30))
 SMART_T3_MAX = int(os.getenv("SMART_T3_MAX", 32))
 SMART_T3_LIMIT = float(os.getenv("SMART_T3_LIMIT", 15.0))
 
+# --- NUEVO: DETECCIÓN DE ESTANCAMIENTO (STALL) ---
+SMART_STALL_MIN_TIME = int(os.getenv("SMART_STALL_MIN_TIME", 120)) # Segundos antes de evaluar stall
+SMART_STALL_LIMIT = float(os.getenv("SMART_STALL_LIMIT", 1.0))      # MB/s promedio mínimo
+
 # --- NUEVO: CONFIGURACIÓN OPTIMIZADA DE DESCARGA (RCLONE) ---
 # Flags para maximizar ancho de banda
 DL_TRANSFERS = os.getenv("DL_TRANSFERS", "8")
@@ -69,10 +73,12 @@ VALID_PREFIXES = [
 ]
 
 # Estructura del CSV (Columnas)
+# AGREGADO: 'categoria' para soportar subcarpetas
 CSV_COLUMNS = [
     'id_global',                # ID único incremental
     'id_prefix',                # ID incremental por prefijo (DOC_001)
-    'prefijo',                  # Categoría (DOC)
+    'prefijo',                  # Categoría Principal (DOC)
+    'categoria',                # Subcategoría (ej: Universidad) - NUEVO
     'nombre_original',          # Nombre real (leíble)
     'nombre_original_encrypted',# Token Fernet completo (recuperación)
     'nombre_encriptado',        # Hash determinista 12 chars (nombre de archivo)

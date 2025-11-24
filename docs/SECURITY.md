@@ -1,22 +1,37 @@
 # 🛡️ Modelo de Seguridad y Criptografía
 
-## 1. Protocolo de "Archivos Testigo" (Witness Files)
-Para evitar el escenario catastrófico donde un usuario encripta y sube datos con una contraseña mal escrita (haciéndolos irrecuperables), implementamos un protocolo de validación previo.
+Este proyecto implementa un enfoque de **"Defensa en Profundidad"** para proteger los activos digitales en entornos de nube pública no confiables.
 
-* **Ubicación:** `backup/keys/` en la nube.
-* **Funcionamiento:** Al inicio, el sistema descarga `witness_master.7z` y `witness_csv.7z`. Intenta abrirlos con las claves ingresadas. Si falla, el programa se detiene inmediatamente.
-* **Seguridad:** Estos archivos contienen datos dummy ("VALID"), no información real.
+## 1. Principio Zero-Knowledge
+El proveedor de la nube (Microsoft, Google, AWS) es tratado como un adversario capaz de leer metadatos y contenido.
+* **Datos:** Cifrados con AES-256.
+* **Metadatos:** Los nombres de archivo son hashes SHA-256 truncados. No hay forma de saber si un archivo es una "Tesis" o un "Video" mirando la nube.
+* **Estructura:** La jerarquía de carpetas se aplana. No se revela la organización del usuario.
 
-## 2. Criptografía de Datos (Data at Rest)
-Utilizamos **AES-256** nativo de 7-Zip para el contenido.
-* **Modo:** `-mhe=on` (Header Encryption). Esto es crucial porque oculta no solo el contenido de los archivos, sino también sus **nombres originales** y la estructura de carpetas interna. Un atacante solo ve un archivo `.7z` opaco.
+## 2. Implementación Criptográfica
 
-## 3. Privacidad de Metadatos
-El índice local (`index_main.csv`) contiene los nombres reales de los archivos. Para proteger esto:
-* El índice se encripta con una contraseña diferente a la de los archivos (Separación de Responsabilidades).
-* El nombre original dentro del CSV se tokeniza adicionalmente usando **Fernet** (Implementación simétrica de criptografía.io), asegurando que incluso si se filtra el CSV plano, los nombres sensibles no son legibles sin la clave de aplicación derivada.
+### Cifrado de Archivos (Data at Rest)
+Utilizamos el estándar industrial **AES-256** en modo CBC implementado nativamente por 7-Zip.
+* **Header Encryption (`-mhe=on`):** Crucial. Cifra no solo el contenido de los archivos comprimidos, sino también la lista de archivos interna. Sin la contraseña, el archivo `.7z` es una caja negra indistinguible de ruido aleatorio.
+* **Key Derivation:** Las contraseñas de usuario no se usan directamente. Se derivan usando **PBKDF2-HMAC-SHA256** con 100,000 iteraciones y un salt específico, protegiendo contra ataques de diccionario y Rainbow Tables.
 
-## 4. Estructura de Carpetas en Nube
-Para evitar el análisis de tráfico o deducción por estructura de directorios, el sistema "aplana" el almacenamiento.
-* **Nube:** `backup/PREFIJO/HASH_ALEATORIO.7z`
-* No se replican las carpetas locales en la nube. La relación lógica se reconstruye solo al descargar y desencriptar localmente.
+### Protección de Identidad (Witness Protocol)
+Para mitigar el riesgo de error humano (olvidar la contraseña o escribirla mal al subir), implementamos el protocolo de **Archivos Testigo**.
+* **Ubicación:** `backup/keys/`.
+* **Funcionamiento:** Al iniciar, el sistema descarga pequeños archivos cifrados (`witness_master.7z`). Intenta desencriptarlos con la contraseña ingresada en memoria.
+* **Efecto:** Si la contraseña es incorrecta, el programa **termina inmediatamente** (`sys.exit()`). Esto impide que el usuario encripte nuevos datos con una contraseña errónea, lo que resultaría en pérdida de datos.
+
+## 3. Topología de Aislamiento en Nube
+
+La estructura de carpetas en la nube está diseñada para segregar datos sensibles de datos estructurales:
+
+| Ruta Nube | Contenido | Nivel de Riesgo |
+| :--- | :--- | :--- |
+| `backup/keys/` | Testigos de validación | Alto (Verificadores de acceso) |
+| `backup/index/` | Base de datos (`index_main.7z`) | Crítico (Mapa de todo el sistema) |
+| `backup/DOC/` | Bloques de datos ofuscados | Medio (Inutilizables sin índice/clave) |
+
+## 4. Gestión de Temporales
+* Todos los procesos criptográficos ocurren en `data/temp/`.
+* El sistema implementa una limpieza agresiva (`safe_delete` con reintentos).
+* **Sanitización:** Al finalizar una operación (éxito o fallo), los residuos en disco se eliminan para evitar fugas de información en el equipo local.

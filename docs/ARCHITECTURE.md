@@ -1,47 +1,71 @@
 # 🏗️ Arquitectura del Sistema
 
-## Patrón de Diseño: Facade (Fachada)
+## 📐 Patrón de Diseño: Facade (Fachada)
 
-El sistema utiliza una arquitectura modular basada en el patrón **Facade**. `main.py` actúa como un orquestador (Cliente) que coordina subsistemas complejos, manteniendo el código limpio y desacoplado.
+Para gestionar la complejidad de interactuar con sistemas de archivos locales, procesos de encriptación externos y transmisiones de red asíncronas, el proyecto utiliza el patrón arquitectónico **Facade**.
 
-### Módulos Principales
+* **El Cliente:** `main.py` (AppOrchestrator). No conoce los detalles de cómo se encripta un byte o cómo se negocia una conexión TCP. Solo invoca comandos de alto nivel (`upload_file`, `decrypt`).
+* **Los Subsistemas:** `CloudManager`, `SecurityManager`, `InventoryManager`. Cada uno encapsula una complejidad específica.
 
-1.  **`SecurityManager` (Criptografía & Compresión):**
-    * Abstrae el uso de `7-Zip` via `subprocess`.
-    * Maneja la derivación de claves (PBKDF2HMAC) y encriptación de metadatos (Fernet).
-    * Implementa la lógica de "aplanado" de directorios al descomprimir.
+### Diagrama de Componentes
 
-2.  **`CloudManager` (Infraestructura & Red):**
-    * Wrapper inteligente sobre `Rclone`.
-    * Implementa la lógica de **Smart Upload** y parsers de salida (TQDM).
-    * Decide dinámicamente entre `copy` (carpetas) y `copyto` (archivos exactos).
-
-3.  **`InventoryManager` (Datos & Persistencia):**
-    * Gestiona el estado del sistema usando `Pandas`.
-    * Asegura la integridad referencial (evita duplicados).
-    * Maneja la concurrencia de lectura/escritura del CSV local.
-
----
-
-## 🔄 Flujo de Datos: Subida (Upload Pipeline)
-
-1.  **Ingesta:** El usuario selecciona una ruta. El sistema escanea recursivamente buscando prefijos válidos (`VALID_PREFIXES`).
-2.  **Preparación:** Se calculan hashes MD5 y se generan metadatos JSON.
-3.  **Encriptación (Local):** Se genera un archivo `.7z` temporal usando AES-256 en modo `Store` (`-mx=0`). *Decisión de diseño: Se prioriza I/O sobre CPU, ya que el contenido multimedia no comprime bien.*
-4.  **Smart Upload (Nube):** Se inicia la transferencia monitoreada. Si la velocidad es inestable, se reinicia el socket.
-5.  **Commit (Transacción):**
-    * Si la subida es `OK` -> Se registra en el `InventoryManager`.
-    * Si la subida `FALLA` -> Se descarta el registro y se limpia el temporal.
-6.  **Sincronización:** Al finalizar el lote, se sube el índice actualizado a `backup/index/`.
+```mermaid
+graph TD
+    User[Usuario] -->|CLI Input| Main[AppOrchestrator (main.py)]
+    
+    Main -->|Gestiona| Inv[InventoryManager]
+    Main -->|Coordina| Sec[SecurityManager]
+    Main -->|Ordena| Cloud[CloudManager]
+    
+    Inv -->|Persistencia| CSV[(Index CSV)]
+    Sec -->|Subprocess| 7z[7-Zip CLI]
+    Cloud -->|Subprocess| Rclone[Rclone CLI]
+    
+    Rclone -->|API| CloudProvider[OneDrive/GDrive]
+```
 
 ---
 
-## 📂 Estrategia de Carpetas (Flattening)
+## 🧩 Módulos Principales
 
-Para evitar la anidación profunda común en compresiones (ej: `Restore/Juego/Juego/Archivo.exe`), el sistema implementa una lógica de aplanado durante la restauración:
+### 1. CloudManager (Capa de Transporte)
 
-1.  El archivo encriptado se baja a `temp/`.
-2.  Se extrae en un directorio temporal único (`uuid`).
-3.  Se elimina el archivo `metadatos.json` (información interna).
-4.  El sistema detecta si hay una carpeta contenedora redundante. Si existe, mueve su *contenido* a la raíz de destino; si son archivos sueltos, los mueve directamente.
-5.  Resultado: Una estructura de carpetas limpia y lista para usar.
+Actúa como un wrapper inteligente sobre Rclone.
+
+* **Responsabilidad:** Abstraer la complejidad de los comandos de CLI de Rclone y añadir lógica de negocio que la herramienta nativa no tiene.
+* **Innovación:** Implementa el algoritmo "Smart Upload". Intercepta el stdout de Rclone en tiempo real, parsea la velocidad con expresiones regulares y toma decisiones de interrupción (`process.terminate()`) si la métrica de calidad de servicio (QoS) cae por debajo de los umbrales definidos en `.env` (T10, T20, T30).
+
+### 2. SecurityManager (Capa de Protección)
+
+Encargada de la confidencialidad e integridad.
+
+* **Responsabilidad:** Transformar datos legibles en datos ofuscados y viceversa.
+* **Estrategia de "Aplanado" (Flattening):** Al descomprimir, este módulo no se limita a extraer. Analiza la estructura resultante en un entorno temporal (`temp/`) y elimina carpetas contenedoras redundantes (ej: `GAM/GAM/juego.exe -> juego.exe`), entregando una estructura limpia al usuario.
+
+### 3. InventoryManager (Capa de Datos)
+
+Gestiona el estado del sistema.
+
+* **Responsabilidad:** Mantener una base de datos local (pandas DataFrame) sincronizada con la realidad de la nube.
+* **Lógica de Categorías:** Implementa la abstracción de "Categorías" (Subfijos) de manera lógica. Físicamente en la nube todo es plano (`backup/PREFIJO/`), pero el InventoryManager agrupa lógicamente los datos (PREFIJO -> CATEGORÍA -> ARCHIVO) para la experiencia de usuario.
+
+---
+
+## 🔄 Flujos de Datos (Pipelines)
+
+### Pipeline de Subida (Transaccional)
+
+Para garantizar la consistencia, el sistema sigue un modelo de Commit de Dos Fases (simulado):
+
+* **Scan & Detect:** Se identifica la estructura local (Carpeta -> Prefijo -> Categoría).
+* **Lock & Encrypt:** Se genera el archivo `.7z` cifrado localmente con metadatos embebidos.
+* **Transfer (Try):** Se intenta subir el archivo usando Smart Upload.
+* **Commit/Rollback:**
+    * **Éxito:** Se escribe el registro en el CSV local (commit).
+    * **Fallo:** Se elimina el archivo temporal cifrado y no se toca la base de datos (rollback), evitando "registros fantasma".
+
+### Pipeline de Descarga (Restauración Lógica)
+
+* **Fetch Index:** Descarga atómica del índice (`index/index_main.7z`) a memoria.
+* **Query:** El usuario filtra por Prefijo y Categoría.
+* **Retrieve:** Descarga del blob cifrado (copyto para evitar carpetas anidadas).

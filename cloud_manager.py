@@ -19,6 +19,8 @@ from config import (
     SMART_T1_MIN, SMART_T1_MAX, SMART_T1_LIMIT,
     SMART_T2_MIN, SMART_T2_MAX, SMART_T2_LIMIT,
     SMART_T3_MIN, SMART_T3_MAX, SMART_T3_LIMIT,
+    # Variables Stall Detection
+    SMART_STALL_MIN_TIME, SMART_STALL_LIMIT,
     # Variables Download Optimization
     DL_TRANSFERS, DL_CHECKERS, DL_MULTI_THREAD_STREAMS, 
     DL_MULTI_THREAD_CUTOFF, DL_BUFFER_SIZE, DL_WRITE_BUFFER_SIZE,
@@ -183,11 +185,13 @@ class CloudManager:
 
     def _smart_upload(self, local_path: str, remote_full_path: str) -> bool:
         """
-        Lógica de subida inteligente para evitar routing subóptimo (BGP).
-        Evalúa velocidad a los 10s, 20s y 30s. Si es baja, reinicia la conexión.
-        Implementa barra de progreso TQDM.
+        Lógica de subida inteligente unificada (archivos grandes y pequeños).
+        - Maneja reintentos infinitos para cortes T10/T20.
+        - Solo consume intentos reales en T30.
+        - Detección de estancamiento (Stall Detection).
+        - Cancelación manual con Ctrl+C.
         """
-        # COMANDO OPTIMIZADO (Solicitud Usuario)
+        # COMANDO OPTIMIZADO
         base_cmd = [
             self.rclone_exe, "copy", local_path, remote_full_path,
             "--transfers", "1",
@@ -195,28 +199,29 @@ class CloudManager:
             "--onedrive-chunk-size", "200M",
             "--buffer-size", "200M",
             "--progress",
-            "--stats", "1s", # Actualizar stats cada segundo para monitoreo real
-            "-v" # Verbose para ver detalles si falla
+            "--stats", "1s", 
+            "-v" 
         ]
 
-        # MEJORA: Leer intentos máximos desde Config
-        max_retries = SMART_MAX_RETRIES
+        max_critical_retries = SMART_MAX_RETRIES
+        critical_failures = 0
+        total_attempts = 0
         
-        # Obtener tamaño total del archivo para la barra inicial
         try:
             total_size = os.path.getsize(local_path)
         except:
             total_size = 0
 
-        for attempt in range(1, max_retries + 1):
-            if attempt > 1:
-                logger.info(f"🔄 Reintentando subida (Intento {attempt}/{max_retries}) por baja velocidad...")
+        # BUCLE MANUAL WHILE PARA CONTROL FINO DE INTENTOS
+        while critical_failures < max_critical_retries:
+            total_attempts += 1
+            if total_attempts > 1:
+                logger.info(f"🔄 Reintentando subida (Global: {total_attempts} | Críticos: {critical_failures}/{max_critical_retries})...")
             
-            # Usamos Popen para leer stdout en tiempo real
             process = subprocess.Popen(
                 base_cmd,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, # Rclone manda stats a stderr a veces, combinamos
+                stderr=subprocess.STDOUT,
                 text=True,
                 encoding='utf-8',
                 bufsize=1
@@ -224,119 +229,172 @@ class CloudManager:
 
             start_time = time.time()
             killed = False
+            critical_error = False # Flag para saber si el error cuenta como "vida perdida"
             
-            # Inicializar barra TQDM
-            # MEJORA: Agregamos [Avg] a la descripción para aclarar
-            pbar = tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"Subiendo (Intento {attempt}) [Avg]", leave=False)
+            pbar = tqdm(total=total_size, unit='B', unit_scale=True, unit_divisor=1024, desc=f"Subiendo (Intento {total_attempts}) [Avg]", leave=False)
             last_bytes = 0
+            
+            # Variables para Stall Detection (Promedio)
+            accumulated_speed = 0.0
+            speed_samples = 0
 
             try:
                 while True:
-                    # Leer línea por línea
                     line = process.stdout.readline()
                     if not line and process.poll() is not None:
                         break
                     
                     if line:
-                        # Si encontramos datos de progreso, actualizamos la barra
+                        # Parseo de Progreso
                         if "Transferred:" in line and "%" in line:
                             curr_bytes, tot_bytes = self._parse_progress(line)
                             if tot_bytes > 0:
-                                # TQDM update es incremental, calculamos el delta
                                 delta = curr_bytes - last_bytes
                                 if delta > 0:
                                     pbar.update(delta)
                                     last_bytes = curr_bytes
                         
-                        # ANÁLISIS DE VELOCIDAD EN TIEMPO REAL
                         elapsed = time.time() - start_time
                         
-                        # Solo analizamos si estamos en los hitos de tiempo críticos
+                        # Análisis de Velocidad
                         if "KiB/s" in line or "MiB/s" in line or "GiB/s" in line:
                             speed = self._parse_speed(line)
-                            
-                            # MEJORA: Actualizar descripción con velocidad instantanea ("Speed")
                             pbar.set_postfix(Speed=f"{speed:.2f} MB/s")
-
-                            # CONFIGURACIÓN DE PUNTOS DE CHEQUEO
-                            # Tupla: (min_t, max_t, limit_speed, message, is_forced_on_last_try)
-                            # MEJORA: El último booleano indica si se debe forzar el chequeo incluso en el último intento
-                            # T1 y T2 se ignoran en el último intento (False al final), pero T3 es mandatorio (True).
-                            check_points = [
-                                (SMART_T1_MIN, SMART_T1_MAX, SMART_T1_LIMIT, "Velocidad baja", False),
-                                (SMART_T2_MIN, SMART_T2_MAX, SMART_T2_LIMIT, "Velocidad baja", False),
-                                (SMART_T3_MIN, SMART_T3_MAX, SMART_T3_LIMIT, "Velocidad insuficiente", True) # Corte mandatorio T3
-                            ]
-
-                            for (t_min, t_max, min_speed, msg, force_check) in check_points:
-                                # Lógica: Chequeamos si NO es el último intento, O si es un chequeo forzoso (T3)
-                                should_check = (attempt < max_retries) or force_check
-                                
-                                if should_check and (t_min <= elapsed <= t_max) and (speed < min_speed):
-                                    # Cerramos barra limpiamente antes de loguear
-                                    pbar.close()
-                                    logger.warning(f"⚠️ {msg} ({speed:.2f} MB/s) a los {t_min}s. Reiniciando routing...")
-                                    process.terminate()
-                                    killed = True
-                                    break
                             
-                            if killed: break
+                            # Acumular para Stall Detection
+                            accumulated_speed += speed
+                            speed_samples += 1
+                            avg_speed_session = accumulated_speed / speed_samples if speed_samples > 0 else 0
+
+                            # --- 1. DETECCIÓN DE ESTANCAMIENTO (STALL) ---
+                            if elapsed > SMART_STALL_MIN_TIME and avg_speed_session < SMART_STALL_LIMIT:
+                                pbar.close()
+                                logger.warning(f"⚠️ ESTANCAMIENTO DETECTADO (Avg: {avg_speed_session:.2f} MB/s en {elapsed:.0f}s). Reiniciando...")
+                                process.terminate()
+                                killed = True
+                                critical_error = True # Un estancamiento largo cuenta como falla crítica
+                                break
+
+                            # --- 2. CORTES TEMPRANOS (GRATUITOS) ---
+                            # T10
+                            if 10 <= elapsed <= 12 and speed < SMART_T1_LIMIT:
+                                pbar.close()
+                                logger.warning(f"⚠️ Velocidad baja ({speed:.2f} MB/s) a los 10s. Reinicio RÁPIDO (No consume intento)...")
+                                process.terminate()
+                                killed = True
+                                critical_error = False # No cuenta
+                                break
+                            
+                            # T20
+                            if 20 <= elapsed <= 22 and speed < SMART_T2_LIMIT:
+                                pbar.close()
+                                logger.warning(f"⚠️ Velocidad baja ({speed:.2f} MB/s) a los 20s. Reinicio RÁPIDO (No consume intento)...")
+                                process.terminate()
+                                killed = True
+                                critical_error = False # No cuenta
+                                break
+
+                            # --- 3. CORTE TARDÍO (CRÍTICO) ---
+                            # T30
+                            if 30 <= elapsed <= 32 and speed < SMART_T3_LIMIT:
+                                pbar.close()
+                                logger.warning(f"⚠️ Velocidad insuficiente ({speed:.2f} MB/s) a los 30s. Falla CRÍTICA...")
+                                process.terminate()
+                                killed = True
+                                critical_error = True # SÍ cuenta
+                                break
+
+            except KeyboardInterrupt:
+                pbar.close()
+                logger.warning("\n🛑 Cancelación manual detectada.")
+                process.terminate()
+                return False # Abortar todo el archivo
 
             except Exception as e:
                 pbar.close()
                 logger.error(f"Error monitoreando proceso: {e}")
                 process.terminate()
                 killed = True
+                critical_error = True
             
-            pbar.close() # Asegurar cierre de barra al terminar el while
+            pbar.close()
 
-            # Esperar a que cierre
             if killed:
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill() # Forzar cierre si no responde
+                try: process.wait(timeout=5)
+                except: process.kill()
                 
-                time.sleep(2) # Esperar un poco antes de reintentar para que el socket se libere
-                continue # Vamos al siguiente intento del for
+                time.sleep(2)
+                
+                if critical_error:
+                    critical_failures += 1
+                
+                continue # Reinicia el while
             else:
-                # Si salimos del while sin killed, el proceso terminó (éxito o error natural)
+                # Terminó sin killed
                 if process.returncode == 0:
                     return True
                 else:
-                    logger.error("❌ Rclone terminó con error (no relacionado a velocidad).")
-                    # Si falló por otra cosa (auth, red), reintentamos también
+                    logger.error("❌ Rclone terminó con error no controlado.")
                     time.sleep(2)
+                    critical_failures += 1 # Error de rclone cuenta como crítico
                     continue
 
-        logger.error("❌ Se agotaron los intentos de subida inteligente.")
+        logger.error(f"❌ Se agotaron los {max_critical_retries} intentos CRÍTICOS de subida.")
         return False
 
     # --- OPERACIONES LOCALES ---
 
-    def scan_local_folders(self, parent_path: Path) -> List[Path]:
+    def scan_local_folders(self, parent_path: Path) -> List[Dict]:
         """
-        Escanea una ruta local y devuelve las subcarpetas que tienen
-        un prefijo válido (DOC, FIN, etc).
+        MEJORA: Escaneo inteligente de 2 niveles para soportar Categorías.
+        Devuelve una lista de diccionarios: {'path': Path, 'prefix': str, 'category': str}
         """
         parent_path = Path(parent_path)
         if not parent_path.exists():
             logger.error(f"Ruta no existe: {parent_path}")
             return []
 
-        valid_folders = []
+        valid_items = []
         logger.info(f"Explorando: {parent_path}")
 
         for item in parent_path.iterdir():
             if item.is_dir():
-                # Verificar si el nombre empieza con algún prefijo válido (case insensitive)
-                if any(item.name.upper().startswith(p) for p in VALID_PREFIXES):
-                    valid_folders.append(item)
+                # 1. Verificar si el nombre es un Prefijo (Nivel 1: Contenedor de Categorías)
+                # Ej: C:/.../DOC
+                possible_prefix = item.name.upper()
+                
+                if possible_prefix in VALID_PREFIXES:
+                    # Estamos en una carpeta PREFIJO (DOC). Exploramos sus hijos (Categorías).
+                    # Ej: C:/.../DOC/Universidad
+                    for subitem in item.iterdir():
+                        if subitem.is_dir():
+                            category_name = subitem.name # "Universidad"
+                            
+                            # Ahora exploramos los archivos dentro de la categoría
+                            # Ej: C:/.../DOC/Universidad/Tesis
+                            for final_item in subitem.iterdir():
+                                if final_item.is_dir(): # Solo procesamos carpetas como unidades
+                                    valid_items.append({
+                                        'path': final_item,
+                                        'prefix': possible_prefix,
+                                        'category': category_name
+                                    })
                 else:
-                    logger.debug(f"Saltando carpeta sin prefijo válido: {item.name}")
-        
-        logger.info(f"✅ Encontradas {len(valid_folders)} carpetas para procesar.")
-        return sorted(valid_folders)
+                    # 2. Verificar si es una carpeta directa con prefijo (Legacy/Simple)
+                    # Ej: C:/.../DOC_Contrato
+                    if any(possible_prefix.startswith(p) for p in VALID_PREFIXES):
+                        # Intentamos deducir el prefijo
+                        prefix_found = next((p for p in VALID_PREFIXES if possible_prefix.startswith(p)), None)
+                        if prefix_found:
+                            valid_items.append({
+                                'path': item,
+                                'prefix': prefix_found,
+                                'category': 'General' # Categoría por defecto
+                            })
+
+        logger.info(f"✅ Encontradas {len(valid_items)} carpetas para procesar.")
+        # Ordenamos por prefijo y luego categoría
+        return sorted(valid_items, key=lambda x: (x['prefix'], x['category']))
 
     def clean_temp(self):
         """Limpia la carpeta temporal."""
@@ -360,39 +418,39 @@ class CloudManager:
     def upload_file(self, local_path: Path, remote_path: str) -> bool:
         """
         Sube un archivo específico con barra de progreso.
-        MEJORA: Si el archivo es grande (>500MB), usa lógica Smart Upload.
-        IMPORTANTE: 'remote_path' debe ser el DESTINO (carpeta o archivo).
+        MEJORA: UNIFICACIÓN. Todos los archivos (grandes o chicos) pasan por _smart_upload.
+        Esto arregla el error 'is a directory' porque _smart_upload usa 'copy', y nos da robustez siempre.
         """
         local_path = Path(local_path)
         # MEJORA: Usar constructor de ruta inteligente
         full_dest = self._build_remote_path(remote_path)
         
-        # Verificar tamaño para decidir estrategia
         try:
             size_mb = local_path.stat().st_size / (1024 * 1024)
         except:
             size_mb = 0
 
-        # UMBRAL: 500 MB para activar Smart Upload
-        if size_mb > 500:
-            logger.info(f"⚡ Archivo grande ({size_mb:.2f} MB). Usando Smart Upload (Routing Fix)...")
+        # SIEMPRE USAR SMART UPLOAD (Incluso para archivos chicos)
+        # Cambiado umbral > 500 a >= 0
+        if size_mb >= 0:
+            logger.info(f"⚡ Archivo detectado ({size_mb:.2f} MB). Iniciando transferencia Smart...")
             # Pasamos rutas como string para el comando Popen
             return self._smart_upload(str(local_path), full_dest)
         else:
-            # Subida normal para archivos pequeños
+            # Este bloque técnicamente es inalcanzable ahora, pero se deja por seguridad
             return self._run_rclone([
                 "copyto", 
                 str(local_path), 
                 full_dest,
-                "--progress",       # Barra de progreso visual
-                "--stats-one-line"  # Formato limpio
+                "--progress",       
+                "--stats-one-line" 
             ], show_progress=True)
 
     def download_file(self, remote_path: str, local_dest: Path, silent: bool = False) -> bool:
         """
         Descarga un archivo específico.
         MEJORA: Inyecta flags optimizados definidos en .env.
-        MEJORA CRÍTICA: Usa 'copyto' para asegurar que el destino sea el archivo exacto y no cree carpetas anidadas.
+        MEJORA CRÍTICA: Usa 'copyto' para asegurar que el destino sea el archivo exacto.
         """
         # Asegurar directorio destino
         local_dest.parent.mkdir(parents=True, exist_ok=True)
@@ -403,8 +461,6 @@ class CloudManager:
         # Obtener flags optimizados
         opt_flags = self._get_download_flags()
 
-        # IMPORTANTE: Usamos 'copyto' aquí para garantizar que 'local_dest' sea el nombre del archivo
-        # y no cree una carpeta con ese nombre en caso de no existir.
         cmd = [
             "copyto", 
             full_src,

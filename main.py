@@ -64,15 +64,19 @@ class AppOrchestrator:
     def _validate_and_sync_key(self, key_type: str, password: str):
         """
         Valida la contraseña contra un archivo testigo en la nube.
+        Usa la carpeta remota 'keys/' para mantener orden.
         """
         witness_name = f"witness_{key_type}.7z"
         local_witness = DATA_DIR / "temp" / witness_name
+        # Ruta dedicada para keys
         remote_witness_path = f"keys/{witness_name}"
         
         self.print_info(f"Validando clave {key_type} con la nube...")
 
         if self.cloud.download_file(remote_witness_path, local_witness, silent=True):
             is_valid = self.security.verify_password_with_witness(local_witness, password)
+            # No borramos inmediatamente para evitar bloqueo
+            
             if is_valid:
                 self.print_success(f"Clave {key_type} VERIFICADA.")
                 return True
@@ -82,6 +86,7 @@ class AppOrchestrator:
         else:
             self.print_info(f"Creando testigo de seguridad para {key_type}...")
             if self.security.create_password_witness(local_witness, password):
+                # Subir a la carpeta keys/
                 if self.cloud.upload_file(local_witness, remote_witness_path):
                     self.print_success(f"Testigo {key_type} creado en carpeta 'keys/'.")
                     self.safe_delete(local_witness)
@@ -133,7 +138,6 @@ class AppOrchestrator:
             local_idx_check = DATA_DIR / "temp" / "index_atomic_check.7z"
             
             if self.cloud.download_file("index/index_main.7z", local_idx_check, silent=True):
-                # Comparamos
                 status = self.inventory.compare_local_vs_cloud_backup(self.security, local_idx_check)
                 self.safe_delete(local_idx_check)
                 
@@ -185,48 +189,29 @@ class AppOrchestrator:
         if not source_path.exists():
             return self.print_error("La ruta no existe.")
 
+        # Llamada al escáner que ahora soporta categorías
         items_encontrados = self.cloud.scan_local_folders(source_path)
         if not items_encontrados:
             return self.print_error("No se encontraron subcarpetas con prefijos válidos.")
 
-        carpetas_a_procesar = []
-        for item in items_encontrados:
-            if item.name in VALID_PREFIXES:
-                hijos = [h for h in item.iterdir() if h.is_dir()]
-                if hijos:
-                    print(f"{Fore.YELLOW}ℹ️  Contenedor '{item.name}' detectado. Se procesarán {len(hijos)} subcarpetas internas.{Style.RESET_ALL}")
-                    carpetas_a_procesar.extend(hijos)
-                else:
-                    self.print_info(f"Contenedor {item.name} vacío.")
-            else:
-                carpetas_a_procesar.append(item)
-
-        carpetas_a_procesar = sorted(carpetas_a_procesar)
-        if not carpetas_a_procesar: return
-
-        confirm = input(f"¿Procesar {len(carpetas_a_procesar)} carpetas individuales? (s/n): ")
+        # items_encontrados es una lista de dicts: {'path', 'prefix', 'category'}
+        
+        confirm = input(f"¿Procesar {len(items_encontrados)} carpetas? (s/n): ")
         if confirm.lower() != 's': return
 
         processed_count = 0
         skipped_count = 0
-        total_files = len(carpetas_a_procesar)
+        total_files = len(items_encontrados)
 
         print(f"\n{Fore.CYAN}🚀 Iniciando lote...{Style.RESET_ALL}")
 
-        for idx, carpeta in enumerate(carpetas_a_procesar, 1):
+        for idx, item_data in enumerate(items_encontrados, 1):
+            carpeta = item_data['path']
+            prefijo = item_data['prefix']
+            categoria = item_data['category']
+            
             try:
-                prefijo = None
-                name_prefix = carpeta.name.split('_')[0] if '_' in carpeta.name else carpeta.name[:3].upper()
-                
-                if name_prefix in VALID_PREFIXES:
-                    prefijo = name_prefix
-                elif carpeta.parent.name in VALID_PREFIXES:
-                    prefijo = carpeta.parent.name
-                
-                if not prefijo:
-                    print(f"{Fore.RED}⚠️  Saltando {carpeta.name}: Prefijo desconocido.{Style.RESET_ALL}")
-                    continue
-
+                # VALIDACIÓN DUPLICADOS (Ahora considerando Categoría implícitamente por nombre)
                 if self.inventory.check_exists(prefijo, carpeta.name):
                     print(f"{Fore.YELLOW}⚠️  [{idx}/{total_files}] Saltando duplicado: {carpeta.name}{Style.RESET_ALL}")
                     skipped_count += 1
@@ -235,6 +220,7 @@ class AppOrchestrator:
                 size_mb = self.security.get_size_mb(carpeta)
                 print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
                 print(f"{Fore.YELLOW}📤 Procesando: {carpeta.name} ({size_mb:.2f} MB) - ({idx}/{total_files}){Style.RESET_ALL}")
+                print(f"   📂 Prefijo: {prefijo} | Categoría: {categoria}")
 
                 next_global, next_prefix = self.inventory.get_next_ids(prefijo)
                 hash_nombre = self.security.generate_filename_hash(carpeta.name)
@@ -246,7 +232,8 @@ class AppOrchestrator:
                     "original_name_token": nombre_orig_encrypted,
                     "hash_filename": hash_nombre,
                     "md5": md5_hash,
-                    "processed_date": fecha_fmt
+                    "processed_date": fecha_fmt,
+                    "category": categoria # Guardamos categoría en metadatos también
                 }
 
                 print(f"{Fore.CYAN}📦 Encriptando...{Style.RESET_ALL}")
@@ -256,9 +243,10 @@ class AppOrchestrator:
                 if self.security.compress_encrypt_7z(carpeta, dest_7z, metadata=metadata_json):
                     print(f"{Fore.GREEN}   ✅ Encriptado.{Style.RESET_ALL}")
 
-                    # Preparamos registro pero NO lo guardamos todavía (Estrategia A)
+                    # REGISTRO CON CATEGORÍA (Estrategia A: No guardar aun)
                     record = {
                         'id_global': next_global, 'id_prefix': next_prefix, 'prefijo': prefijo,
+                        'categoria': categoria, # NUEVO CAMPO
                         'nombre_original': carpeta.name, 'nombre_original_encrypted': nombre_orig_encrypted,
                         'nombre_encriptado': hash_nombre, 'ruta_relativa': f"{prefijo}/",
                         'carpeta_hija': filename_7z, 'tamaño_mb': size_mb,
@@ -267,16 +255,15 @@ class AppOrchestrator:
                     
                     print(f"{Fore.CYAN}⬆️  Subiendo a la nube...{Style.RESET_ALL}")
                     
-                    # Intentamos subir PRIMERO
+                    # Subida a carpeta PREFIJO (Plana en la nube)
                     if self.cloud.upload_file(dest_7z, prefijo):
                         print(f"{Fore.GREEN}   ✅ Subida OK.{Style.RESET_ALL}")
                         
-                        # SI SUBIDA OK -> REGISTRAMOS EN CSV
+                        # SUBIDA OK -> REGISTRAMOS
                         self.inventory.add_record(record)
-                        self.safe_delete(dest_7z)
+                        self.inventory.save_local()
                         processed_count += 1
                     else:
-                        # SI SUBIDA FALLA -> NO REGISTRAMOS, BORRAMOS TEMP Y CONTINUAMOS
                         self.print_error("Fallo subida. No se registrará en índice.")
                         self.safe_delete(dest_7z)
                 
@@ -290,6 +277,7 @@ class AppOrchestrator:
             self.print_info("Sincronizando índice en la nube...")
             encrypted_index_path = self.inventory.save_encrypted_backup(self.security, prefix="UPLOAD")
             if encrypted_index_path:
+                # Subir índice a carpeta 'index/'
                 if self.cloud.upload_file(encrypted_index_path, "index/index_main.7z"):
                     self.print_success("Índice actualizado en 'index/'.")
                 else:
@@ -303,12 +291,14 @@ class AppOrchestrator:
         self.print_info("Sincronizando índice...")
         local_idx_enc = Path("data/temp/index_main_download.7z")
         
+        # Descargar desde 'index/'
         if self.cloud.download_file("index/index_main.7z", local_idx_enc, silent=True):
             if self.inventory.load_from_encrypted(self.security, local_idx_enc, temp_only=True):
                 self.print_success("Índice actualizado.")
         else:
             self.print_info("Usando índice local.")
 
+        # 1. MENU PREFIJOS
         summary = self.inventory.get_prefixes_summary()
         if summary.empty: 
             self.print_error("Índice vacío.")
@@ -321,7 +311,7 @@ class AppOrchestrator:
         summary_view = summary.rename(columns={'prefijo': 'Prefijo', 'count': 'Cant. Archivos'})
         print(tabulate(summary_view, headers='keys', tablefmt='simple'))
 
-        sel_idx = input("\n👉 Seleccione el NÚMERO (#) del Prefijo (o 0 para Salir/Volver): ").strip()
+        sel_idx = input("\n👉 Seleccione el NÚMERO (#) del Prefijo (o 0 para Salir): ").strip()
         
         if not sel_idx.isdigit() or int(sel_idx) == 0: 
             self.safe_delete(local_idx_enc)
@@ -334,13 +324,34 @@ class AppOrchestrator:
             self.safe_delete(local_idx_enc)
             return
 
-        files_df = self.inventory.get_files_by_prefix(sel_prefix)
+        # 2. MENU CATEGORÍAS (NUEVO)
+        categories = self.inventory.get_categories_by_prefix(sel_prefix)
+        
+        sel_category = 'TODO' # Por defecto
+        if not categories.empty:
+            print(f"\n{Fore.CYAN}📂 SUB-CATEGORÍAS EN '{sel_prefix}':{Style.RESET_ALL}")
+            categories = categories.reset_index(drop=True)
+            categories.index = categories.index + 1
+            cat_view = categories.rename(columns={'categoria': 'Subfijo', 'count': 'Cant.'})
+            print(tabulate(cat_view, headers='keys', tablefmt='simple'))
+            
+            sel_cat_idx = input("\n👉 Seleccione el NÚMERO (#) del Subfijo (o 0 para Todo): ").strip()
+            
+            if sel_cat_idx.isdigit() and int(sel_cat_idx) > 0:
+                try:
+                    sel_category = categories.iloc[int(sel_cat_idx)-1]['categoria']
+                except IndexError:
+                    self.print_error("Número inválido, mostrando todo.")
+
+        # 3. LISTADO ARCHIVOS
+        files_df = self.inventory.get_files_by_category(sel_prefix, sel_category)
         if files_df.empty: 
             self.print_error("Carpeta vacía.")
             self.safe_delete(local_idx_enc)
             return
 
-        print(f"\n{Fore.CYAN}📄 ARCHIVOS EN '{sel_prefix}':{Style.RESET_ALL}")
+        print(f"\n{Fore.CYAN}📄 ARCHIVOS EN '{sel_prefix}' > '{sel_category}':{Style.RESET_ALL}")
+        # Mostrar id_prefix como ID
         view_df = files_df[['id_prefix', 'nombre_original', 'nombre_encriptado', 'tamaño_mb']].rename(columns={'id_prefix': 'ID'})
         print(tabulate(view_df, headers=['ID', 'Nombre Real', 'Nombre 7z', 'MB'], tablefmt='simple', showindex=False))
 
@@ -372,17 +383,22 @@ class AppOrchestrator:
 
         for i, (idx, row) in enumerate(to_download.iterrows(), 1):
             nombre_real = row['nombre_original']
+            cat_archivo = row['categoria']
             size_mb = row['tamaño_mb']
             
             remote_path = f"{row['ruta_relativa']}{row['nombre_encriptado']}.7z"
             local_7z = Path(f"data/descargas/{row['nombre_encriptado']}.7z")
-            local_dest_folder = Path(f"data/desencriptados/{nombre_real}")
+            
+            # MEJORA: Destino organizado por Categoría
+            # data/desencriptados/Categoria/NombreReal
+            local_dest_folder = Path(f"data/desencriptados/{cat_archivo}/{nombre_real}")
 
             print(f"\n{Fore.BLUE}────────────────────────────────────────────────────────────{Style.RESET_ALL}")
             print(f"{Fore.YELLOW}📥 Bajando: {nombre_real} (Size: {size_mb} MB) - ({i} de {total_items}){Style.RESET_ALL}")
             
             if self.cloud.download_file(remote_path, local_7z, silent=False):
                 print(f"{Fore.YELLOW}📦 Desencriptando y descomprimiendo...{Style.RESET_ALL}")
+                # security_manager maneja el aplanado
                 if self.security.decrypt_extract_7z(local_7z, local_dest_folder):
                     print(f"{Fore.GREEN}   ✅ Restaurado en: {local_dest_folder}{Style.RESET_ALL}")
                     self.safe_delete(local_7z)
@@ -398,7 +414,7 @@ class AppOrchestrator:
         self.print_header("CONSULTA")
         print(self.inventory.get_stats())
         print("\nÚltimos 10 registros:")
-        print(tabulate(self.inventory.df.tail(10)[['id_global', 'prefijo', 'nombre_original', 'fecha_procesado']], headers='keys'))
+        print(tabulate(self.inventory.df.tail(10)[['id_global', 'prefijo', 'categoria', 'nombre_original']], headers='keys'))
         input("\nPresione Enter para volver...")
 
     def run_maintenance_mode(self):

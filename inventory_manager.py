@@ -108,6 +108,36 @@ class InventoryManager:
         """Retorna todos los archivos de un prefijo específico."""
         return self.df[self.df['prefijo'] == prefix]
 
+    # --- NUEVOS MÉTODOS PARA CATEGORÍAS ---
+
+    def get_categories_by_prefix(self, prefix: str) -> pd.DataFrame:
+        """Retorna las categorías únicas dentro de un prefijo con su conteo."""
+        if self.df.empty:
+            return pd.DataFrame(columns=['categoria', 'count'])
+        
+        prefix_df = self.df[self.df['prefijo'] == prefix]
+        if prefix_df.empty:
+            return pd.DataFrame(columns=['categoria', 'count'])
+            
+        # Llenar NaN con 'General' para archivos viejos sin categoría
+        prefix_df['categoria'] = prefix_df['categoria'].fillna('General')
+        
+        return prefix_df['categoria'].value_counts().reset_index()
+
+    def get_files_by_category(self, prefix: str, category: str) -> pd.DataFrame:
+        """Retorna archivos filtrados por Prefijo Y Categoría."""
+        # Tratamiento de nulos para compatibilidad
+        temp_df = self.df.copy()
+        temp_df['categoria'] = temp_df['categoria'].fillna('General')
+        
+        if category == 'TODO':
+            return temp_df[temp_df['prefijo'] == prefix]
+        
+        return temp_df[
+            (temp_df['prefijo'] == prefix) & 
+            (temp_df['categoria'] == category)
+        ]
+
     def find_file(self, criteria: str, value: str) -> pd.DataFrame:
         """
         Busca archivos. 
@@ -223,8 +253,6 @@ class InventoryManager:
         except: pass
         return False
 
-    # --- NUEVO: VALIDACIÓN ATOMICIDAD ---
-    
     def compare_local_vs_cloud_backup(self, security_manager, cloud_backup_path: Path) -> str:
         """
         Compara el índice local actual contra un backup descargado de la nube.
@@ -245,7 +273,6 @@ class InventoryManager:
                     count_cloud = len(cloud_df)
                     
                     # Criterio simple: Cantidad de registros
-                    # Se podria mejorar comparando fechas si tuvieramos columna de update
                     if count_local > count_cloud:
                         return 'LOCAL_NEWER'
                     elif count_cloud > count_local:

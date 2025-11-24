@@ -1,35 +1,33 @@
-# 🔧 Desafíos de Ingeniería y Soluciones (Engineering Journal)
+# 🔧 Engineering Journal: Desafíos y Soluciones
 
-Durante el desarrollo de este gestor de archivos, enfrentamos varios desafíos técnicos relacionados con la interacción con el sistema operativo (Windows) y la inestabilidad de las redes. Aquí se documentan las soluciones implementadas.
+Registro técnico de los obstáculos encontrados durante el desarrollo v3.x y las soluciones de ingeniería aplicadas.
 
-## 1. El Problema del "Muro de Texto" en Consola
-**Desafío:** Al leer la salida estándar (`stdout`) de Rclone para monitorear la velocidad, la consola se llenaba de miles de líneas, haciendo imposible leer los logs de error o el estado.
-**Solución:** Implementación de **TQDM** con parseo en tiempo real.
-* Interceptamos el `stdout` de Rclone línea por línea.
-* Usamos expresiones regulares (`Regex`) para extraer `%` y `Velocidad`.
-* Alimentamos una barra de progreso TQDM manual que se actualiza en la misma línea (`\r`), manteniendo la consola limpia y profesional.
+## 1. Inestabilidad de Routing BGP (El problema de "1 MB/s")
+* **Contexto:** Subiendo archivos grandes (>3GB) a OneDrive, la velocidad se estancaba aleatoriamente en 1-2 MB/s, a pesar de tener una conexión de fibra simétrica de 600 Mbps.
+* **Diagnóstico:** El enrutamiento TCP/IP hacia los servidores de ingestión de la nube a veces tomaba saltos congestionados. Rclone nativo no detecta "lentitud", solo cortes.
+* **Solución:** Algoritmo **Smart Upload**. Implementamos un monitor de caudal. Si en T=30s la velocidad es < 15 MB/s, el sistema asume una mala ruta, mata el proceso y reintenta. Esto fuerza al sistema operativo y al ISP a negociar una nueva ruta, solucionando el problema en el 90% de los reintentos.
 
-## 2. Bloqueo de Archivos en Windows (`[WinError 5] Access is denied`)
-**Desafío:** Al intentar borrar archivos temporales (`witness.7z`, índices) inmediatamente después de usarlos, Windows arrojaba errores de permiso porque el proceso (Python o el antivirus) aún tenía el "handle" del archivo abierto.
-**Solución:**
-1.  Implementación de función `safe_delete` con **Backoff Exponencial**: Intenta borrar 10 veces con pausas crecientes (0.5s, 0.7s...).
-2.  **Limpieza Diferida:** En el arranque (`main.py`), los testigos no se borran inmediatamente tras la validación. Se introdujo un `time.sleep(5)` estratégico para dar tiempo al SO a liberar los recursos antes de la limpieza.
+## 2. Corrupción Lógica: "Registros Fantasma"
+* **Contexto:** Si una subida se interrumpía manualmente o por error de red en el último intento, el archivo ya aparecía en el CSV local como "Subido".
+* **Causa:** El registro en la base de datos ocurría *antes* de la confirmación de la subida.
+* **Solución:** Inversión de control (Commit-Logic). El código se refactorizó para que `inventory.add_record()` solo se ejecute si y solo si `cloud.upload_file()` retorna `True`. Esto garantiza integridad referencial estricta.
 
-## 3. Rclone: `copy` vs `copyto` (El bug de las carpetas anidadas)
-**Desafío:** Al descargar archivos específicos (como las llaves o el índice), Rclone creaba una carpeta con el nombre del archivo en lugar de descargar el archivo en sí (ej: `data/temp/index.7z/index.7z`). Esto rompía la lógica de borrado, ya que `unlink()` falla en directorios.
-**Análisis:** El comando `rclone copy` asume que el destino es siempre un directorio.
-**Solución:** Se migró la lógica crítica a `rclone copyto`. Este comando es explícito: si el destino es una ruta de archivo, escribe el archivo ahí, garantizando una estructura plana y predecible.
+## 3. Rclone: Ambigüedad de `copy` vs `copyto`
+* **Contexto:** Al descargar archivos individuales (como los testigos), Rclone creaba una carpeta con el nombre del archivo (`temp/witness.7z/witness.7z`) en lugar del archivo en sí. Esto hacía fallar la función de borrado `os.unlink`.
+* **Diagnóstico:** `rclone copy` trata el destino como un directorio. Si no existe, lo crea.
+* **Solución:** Implementación de `rclone copyto` para operaciones de archivo único. Este comando fuerza a Rclone a tratar el destino como una ruta de archivo, evitando la creación de estructuras anidadas erróneas.
 
-## 4. Routing BGP Subóptimo (Velocidades de 2MB/s en fibra óptica)
-**Desafío:** Al subir archivos grandes a nubes públicas, la conexión a veces se negociaba a través de rutas congestionadas, limitando la velocidad a <5 MB/s a pesar de tener 600 MB/s disponibles.
-**Solución:** Algoritmo **"Smart Upload"**.
-* El sistema muestrea la velocidad en T=10s, T=20s y T=30s.
-* Si la velocidad está por debajo del umbral configurado en `.env`, el sistema mata proactivamente el proceso de subida y reintenta.
-* Esto fuerza una nueva negociación TCP/IP y BGP, logrando frecuentemente saltar a una ruta de alta velocidad en el segundo intento.
+## 4. Bloqueo de Archivos en Windows (`Access Denied`)
+* **Contexto:** Intentar borrar archivos temporales inmediatamente después de usarlos fallaba aleatoriamente.
+* **Causa:** Latencia del sistema de archivos NTFS o escaneo de antivirus manteniendo el *file handle* abierto milisegundos después de que Python lo cerrara.
+* **Solución:**
+    1.  **Backoff Exponencial:** `safe_delete` reintenta el borrado 10 veces con esperas crecientes.
+    2.  **Limpieza Diferida:** En el arranque, introdujimos un `time.sleep(5)` explícito antes de limpiar los testigos, dando tiempo al SO para liberar los recursos.
 
-## 5. Integridad del Índice (Registros Fantasma)
-**Desafío:** Si una subida fallaba en el último intento, el archivo ya se había registrado en el CSV en memoria. Al guardar el CSV, quedaba un registro de un archivo que no existía en la nube.
-**Solución:** Implementación de **Registro Transaccional (Commit)**.
-* Se invirtió la lógica en `main.py`.
-* Ahora: `Encriptar` -> `Intentar Subir` -> `¿Éxito?` -> `Registrar en CSV`.
-* Si falla la subida, el registro nunca ocurre, manteniendo la integridad total entre el índice local y la realidad en la nube.
+## 5. Estructura Recursiva al Descomprimir
+* **Contexto:** Al comprimir una carpeta "Juego", 7-Zip guarda la carpeta raíz. Al descomprimir en "Juego", terminábamos con `Juego/Juego/archivo.exe`.
+* **Solución:** Lógica de "Aplanado" en `SecurityManager`. El sistema extrae en un UUID temporal, inspecciona el contenido, y si detecta una carpeta contenedora única, mueve su contenido hacia arriba, eliminando el nivel redundante automáticamente.
+
+## 6. Estancamiento Silencioso (Stall)
+* **Contexto:** A veces la velocidad no era baja, sino cero, pero la conexión no se cortaba (Zombie socket).
+* **Solución:** Implementación de **Stall Detection**. Si el tiempo transcurrido es > 120s y el promedio de velocidad es < 1 MB/s, se considera conexión muerta y se fuerza el reinicio del ciclo de subida.
