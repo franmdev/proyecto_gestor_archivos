@@ -432,7 +432,7 @@ class CloudManager:
 
         # SIEMPRE USAR SMART UPLOAD (Incluso para archivos chicos)
         # Cambiado umbral > 500 a >= 0
-        if size_mb >= 0:
+        if size_mb >= 10:
             logger.info(f"⚡ Archivo detectado ({size_mb:.2f} MB). Iniciando transferencia Smart...")
             # Pasamos rutas como string para el comando Popen
             return self._smart_upload(str(local_path), full_dest)
